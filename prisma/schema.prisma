@@ -43,6 +43,8 @@ model BrandProfile {
   brandName         String
   contactEmail      String
   contactPhone      String
+  websiteUrl        String?
+  category          String?
   aiTrainingConsent Boolean   @default(false)
   consentTimestamp  DateTime?
   status            String    @default("pending_review")
