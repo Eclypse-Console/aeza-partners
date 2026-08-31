@@ -1,0 +1,12 @@
+:root {
+  --aeza-green: #6efe42;
+  --aeza-purple: #a855f7;
+  --aeza-purple-deep: #7f20ac;
+  --font-body: "Montserrat", "Inter", -apple-system, sans-serif;
+  --font-headline: "Playfair Display", Georgia, serif;
+  --radius-card: 16px;
+  --radius-button: 12px;
+  --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.08);
+  --shadow-card-hover: 0 8px 28px rgba(0, 0, 0, 0.12);
+  --shadow-cta-glow: 0 0 16px rgba(110, 254, 66, 0.35);
+}

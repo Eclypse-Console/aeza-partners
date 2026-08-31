@@ -1,0 +1,196 @@
+/* Step 1 — logo animation (the sole dark-theme step) */
+.step1 {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 80vh;
+  overflow: hidden;
+  /* Solid dark fallback first, radial gradient layered on top — Safari has weak
+     alpha-WEBM support, so if the video's transparency doesn't render cleanly it
+     still sits on a matching dark background instead of looking broken. */
+  background-color: #0f131e;
+  background-image: radial-gradient(
+    33% 50% at 50% 50%,
+    #29055f 0%,
+    #0f131e 100%
+  );
+}
+
+.step1Video {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  max-height: 80vh;
+  object-fit: contain;
+}
+
+.step1Continue {
+  position: absolute;
+  z-index: 2;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.85);
+  font-family: var(--font-body);
+  font-size: 13px;
+  padding: 8px 20px;
+  border-radius: var(--radius-button);
+  cursor: pointer;
+  opacity: 0.85;
+  transition:
+    opacity 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.step1Continue:hover {
+  opacity: 1;
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
+/* Steps 2–5 — light Polaris-themed steps */
+.step {
+  font-family: var(--font-body);
+  color: var(--p-color-text);
+  background: var(--p-color-bg);
+}
+
+.stepInner {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 48px 24px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.stepInnerWide {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 48px 24px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+}
+
+.headline {
+  font-family: var(--font-headline);
+  font-size: 32px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--p-color-text);
+}
+
+.body {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.5;
+  margin: 0;
+  color: var(--p-color-text);
+}
+
+/* Primary CTA button — used on every step except confirmation.
+   Solid deep purple chosen over the green→purple gradient: at #6efe42's
+   luminance a 135deg gradient into #a855f7 read as neon against Polaris's
+   light admin background, so this uses the spec's documented fallback. */
+.ctaButton {
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 600;
+  color: #ffffff;
+  background: var(--aeza-purple-deep);
+  border: none;
+  border-radius: var(--radius-button);
+  padding: 12px 28px;
+  cursor: pointer;
+  box-shadow: none;
+  transition:
+    box-shadow 0.2s ease,
+    transform 0.1s ease;
+}
+
+.ctaButton:hover:not(:disabled) {
+  box-shadow: var(--shadow-cta-glow);
+}
+
+.ctaButton:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.ctaButton:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Cards — feature cards and the onboarding form container */
+.card {
+  background: #ffffff;
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  border: none;
+  transition: box-shadow 0.2s ease;
+  padding: 32px;
+  text-align: left;
+}
+
+.card:hover {
+  box-shadow: var(--shadow-card-hover);
+}
+
+.featuresGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 20px;
+  width: 100%;
+}
+
+.featureCard {
+  composes: card;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+}
+
+.featureVisual {
+  width: 120px;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.featureTitle {
+  font-family: var(--font-headline);
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--p-color-text);
+}
+
+.featureDescription {
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  margin: 0;
+  color: var(--p-color-text);
+}
+
+.formCard {
+  composes: card;
+  width: 100%;
+  max-width: 520px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  text-align: left;
+}

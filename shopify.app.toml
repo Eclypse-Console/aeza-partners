@@ -23,7 +23,7 @@ api_version = "2026-07"
   topics = [ "app/scopes_update" ]
 
 [auth]
-redirect_urls = [https://aeza-partners.vercel.app/auth/callback ]
+redirect_urls = [ "https://aeza-partners.vercel.app/auth/callback" ]
 
 [build]
 include_config_on_deploy = true
