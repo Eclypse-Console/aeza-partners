@@ -19,36 +19,53 @@ export default function App() {
   const { showForm } = useLoaderData<typeof loader>();
 
   return (
-    <div className={styles.index}>
+    <div className={styles.page}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>
+          Discover Aeza — India&apos;s{" "}
+          <span className={styles.accentGreen}>AI stylist</span> and
+          multi-brand fashion marketplace
+        </h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          We help your brand grow sales through AI-powered personalization —
+          tailored outfit recommendations and virtual try-on that build
+          shopper confidence, drive conversion, and reduce returns from
+          sizing guesswork.
         </p>
+
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
-            <label className={styles.label}>
-              <span>Shop domain</span>
-              <input className={styles.input} type="text" name="shop" />
-              <span>e.g: my-shop-domain.myshopify.com</span>
+            <label className={styles.label} htmlFor="shop">
+              Shop domain
             </label>
+            <input
+              id="shop"
+              className={styles.input}
+              type="text"
+              name="shop"
+              placeholder="my-shop-domain.myshopify.com"
+            />
             <button className={styles.button} type="submit">
               Log in
             </button>
           </Form>
         )}
+
         <ul className={styles.list}>
-          <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+          <li className={styles.listItem}>
+            <strong className={styles.listItemTitle}>AI Stylist</strong>
+            Conversational recommendations pulled straight from your
+            catalog — more discovery, higher order value.
           </li>
-          <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+          <li className={styles.listItem}>
+            <strong className={styles.listItemTitle}>Virtual Try-On</strong>
+            Shoppers see it on themselves before they buy — fewer size
+            returns, stronger margins.
           </li>
-          <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+          <li className={styles.listItem}>
+            <strong className={styles.listItemTitle}>Dynamic Sizing</strong>
+            Aeza learns your true fit, not a generic chart — fewer
+            wrong-size orders, more repeat buyers.
           </li>
         </ul>
       </div>
