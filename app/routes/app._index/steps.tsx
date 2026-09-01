@@ -441,7 +441,9 @@ export function ScreenB({
         }}
       />
       <FeatureRow
-        title="Dynamic sizing"
+        eyebrow="03 · FIT & SETUP"
+        title="Your size chart, learned — and you're live in a minute"
+        large
         description={
           <>
             Generic charts don&apos;t work — an L in one brand isn&apos;t an
