@@ -232,7 +232,7 @@
   padding: 64px 24px 96px;
   display: flex;
   flex-direction: column;
-  gap: 112px;
+  gap: 160px;
 }
 
 .featureRow {
