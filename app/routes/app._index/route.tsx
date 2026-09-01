@@ -59,8 +59,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: "Please fill in all fields before continuing." };
   }
 
-  const brandProfile = await prisma.brandProfile.create({
-    data: {
+  const brandProfile = await prisma.brandProfile.upsert({
+    where: { shop: session.shop },
+    update: {
+      brandName,
+      contactEmail,
+      contactPhone,
+      websiteUrl,
+      category,
+    },
+    create: {
       shop: session.shop,
       brandName,
       contactEmail,
