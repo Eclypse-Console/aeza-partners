@@ -201,6 +201,23 @@ function FeatureBullets({ items }: { items: string[] }) {
   );
 }
 
+function FeatureStats({
+  stats,
+}: {
+  stats: { label: string; value: string }[];
+}) {
+  return (
+    <div className={styles.featureStats}>
+      {stats.map((stat) => (
+        <div key={stat.label} className={styles.featureStatCard}>
+          <p className={styles.featureStatLabel}>{stat.label}</p>
+          <p className={styles.featureStatValue}>{stat.value}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function FeatureRow({
   eyebrow,
   title,
@@ -413,16 +430,22 @@ export function ScreenB({
         reversed
       />
       <FeatureRow
-        title="Virtual Try-On"
+        eyebrow="02 · CONVERSION"
+        title="They see it on themselves before they buy"
+        large
         description={
           <>
-            Let shoppers see it before they buy it. Aeza renders your
-            products on real bodies, building the confidence that leads to
-            checkout{" "}
-            <span className={styles.accentGreen}>fewer size returns</span>{" "}
-            and{" "}
-            <span className={styles.accentGreen}>stronger margins</span> on
-            every order.
+            <p className={styles.featureDescriptionText}>
+              Aeza renders your products on the shopper&apos;s own photo.
+              Confidence at the moment of decision means fewer size returns
+              and healthier margins on every order.
+            </p>
+            <FeatureStats
+              stats={[
+                { label: "Indian apparel returns", value: "1 in 4+" },
+                { label: "Add-to-cart rate", value: "Above average" },
+              ]}
+            />
           </>
         }
         visual={{
@@ -430,7 +453,6 @@ export function ScreenB({
           src: tryOnTutorialImage,
           alt: "Virtual try-on tutorial preview",
         }}
-        reversed
       />
       <FeatureRow
         title="Dynamic Sizing"
