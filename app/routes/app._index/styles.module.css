@@ -228,20 +228,6 @@
   cursor: not-allowed;
 }
 
-/* Green variant of the CTA, used only where requested (Screen A's intro
-   Continue button) — swaps to the button's normal deep-purple background
-   on hover. Text flips to dark on the bright green for legible contrast,
-   back to white on the purple hover state. */
-.ctaButtonGreen {
-  background: var(--aeza-green);
-  color: #0f131e;
-}
-
-.ctaButtonGreen:hover:not(:disabled) {
-  background: var(--aeza-purple-deep);
-  color: #ffffff;
-}
-
 /* Dark glass-morphism card, shared by feature media containers and the form */
 .glassCard {
   background: rgba(255, 255, 255, 0.05);
