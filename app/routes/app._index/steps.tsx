@@ -96,17 +96,45 @@ export function ScreenA({ onAdvance }: { onAdvance: () => void }) {
         className={`${styles.screenALayer} ${showIntro ? styles.screenALayerVisible : styles.screenALayerHidden}`}
       >
         <div className={styles.stepInner}>
+          <div className={styles.introLogo}>
+            <svg
+              className={styles.introSparkle}
+              width="28"
+              height="28"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 2 14.1 9.4 21.5 11.5 14.1 13.6 12 21 9.9 13.6 2.5 11.5 9.9 9.4 12 2Z"
+                fill="var(--aeza-green)"
+              />
+            </svg>
+            <span className={styles.introLogoText}>aeza</span>
+          </div>
+          <p className={styles.introTagline}>Aeza for Shopify brands</p>
           <h1 className={styles.headline}>
-            Discover Aeza India&apos;s{" "}
-            <span className={styles.accentGreen}>AI stylist</span> and
-            multi-brand fashion marketplace
+            Put your catalog in front of India&apos;s{" "}
+            <span className={styles.accentGreen}>AI stylist</span> marketplace
           </h1>
           <p className={styles.body}>
-            We help your brand grow sales through AI-powered
-            personalization - tailored outfit recommendations and virtual
-            try-on that build shopper confidence, drive conversion, and
-            reduce returns from sizing guesswork.
+            Sync your Shopify products to Aeza and reach shoppers through
+            conversational styling, virtual try-on and true-to-brand sizing.
           </p>
+          <div className={styles.introBadges}>
+            <span className={styles.introBadge}>
+              <span className={styles.introBadgeDot} />
+              AI stylist
+            </span>
+            <span className={styles.introBadge}>
+              <span className={styles.introBadgeDot} />
+              Virtual try-on
+            </span>
+            <span className={styles.introBadge}>
+              <span className={styles.introBadgeDot} />
+              Dynamic sizing
+            </span>
+          </div>
           <button type="button" className={styles.ctaButton} onClick={onAdvance}>
             Continue
           </button>
