@@ -310,6 +310,7 @@
 }
 
 .featureTitleLarge {
+  font-family: var(--font-headline);
   font-size: 34px;
   line-height: 1.2;
 }
@@ -347,6 +348,36 @@
   border-radius: 50%;
   border: 2px solid var(--aeza-green);
   flex-shrink: 0;
+}
+
+.featureStats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+.featureStatCard {
+  flex: 1 1 160px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+
+.featureStatLabel {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: rgba(240, 240, 240, 0.6);
+  margin: 0 0 8px;
+}
+
+.featureStatValue {
+  font-family: var(--font-headline);
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--aeza-green);
+  margin: 0;
 }
 
 @media (max-width: 720px) {
