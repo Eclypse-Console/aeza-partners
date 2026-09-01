@@ -107,25 +107,11 @@
   gap: 16px;
 }
 
-/* Screen A intro — "aeza" wordmark + sparkle above the headline */
+/* Screen A intro — "aeza" wordmark, above the headline */
 .introLogo {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.introSparkle {
-  flex-shrink: 0;
-  margin-right: -8px;
-  transform: translateY(-8px);
-}
-
-.introLogoText {
-  font-family: var(--font-headline);
-  font-style: italic;
-  font-size: 40px;
-  line-height: 1;
-  color: #ffffff;
+  width: 160px;
+  height: auto;
+  display: block;
 }
 
 .introTagline {
@@ -304,7 +290,7 @@
 .featureTitle {
   font-family: var(--font-body);
   font-size: 22px;
-  font-weight: 700;
+  font-weight: 500;
   margin: 0 0 12px;
   color: #ffffff;
 }

@@ -8,6 +8,7 @@ import {
 import type { IPlayerProps } from "@lottiefiles/react-lottie-player";
 
 import logoVideoUrl from "../../assets/aeza-logo-animation/aeza-logo-reveal-transparent.webm";
+import aezaLogoImage from "../../assets/aeza-logo.png";
 import aezaShopLottieUrl from "../../assets/lottie-jsons/Aeza-Shop.json?url";
 import aezaSizeLottieUrl from "../../assets/lottie-jsons/Aeza-Size.json?url";
 import tryOnTutorialImage from "../../assets/try-on-tutorial.png";
@@ -94,22 +95,7 @@ export function ScreenA({ onAdvance }: { onAdvance: () => void }) {
         className={`${styles.screenALayer} ${showIntro ? styles.screenALayerVisible : styles.screenALayerHidden}`}
       >
         <div className={styles.stepInner}>
-          <div className={styles.introLogo}>
-            <svg
-              className={styles.introSparkle}
-              width="28"
-              height="28"
-              viewBox="0 0 24 24"
-              fill="none"
-              aria-hidden="true"
-            >
-              <path
-                d="M12 2 14.1 9.4 21.5 11.5 14.1 13.6 12 21 9.9 13.6 2.5 11.5 9.9 9.4 12 2Z"
-                fill="var(--aeza-green)"
-              />
-            </svg>
-            <span className={styles.introLogoText}>aeza</span>
-          </div>
+          <img className={styles.introLogo} src={aezaLogoImage} alt="aeza" />
           <p className={styles.introTagline}>Aeza for Shopify brands</p>
           <h1 className={styles.headline}>
             Put your catalog in front of India&apos;s{" "}
@@ -455,18 +441,16 @@ export function ScreenB({
         }}
       />
       <FeatureRow
-        title="Dynamic Sizing"
+        title="Dynamic sizing"
         description={
           <>
-            Every brand fits differently generic charts don&apos;t work.
-            Aeza learns your true fit and matches every shopper to it, so
-            you get{" "}
-            <span className={styles.accentGreen}>fewer wrong-size orders</span>{" "}
-            and shoppers who trust you enough to{" "}
-            <span className={styles.accentGreen}>buy again</span>.
+            Generic charts don&apos;t work — an L in one brand isn&apos;t an
+            L in yours. Aeza maps each shopper to your real measurements, so
+            fewer wrong-size orders leave your warehouse.
           </>
         }
         visual={{ type: "lottie", src: aezaSizeLottieUrl }}
+        reversed
       />
 
       <div className={styles.formCard}>
