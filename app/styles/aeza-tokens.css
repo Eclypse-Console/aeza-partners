@@ -10,3 +10,19 @@
   --shadow-card-hover: 0 8px 28px rgba(0, 0, 0, 0.12);
   --shadow-cta-glow: 0 0 16px rgba(110, 254, 66, 0.35);
 }
+
+/* The browser's default `body { margin: 8px }` user-agent stylesheet was
+   never reset, so any full-bleed `min-height: 100vh` section (Screen A,
+   the _index landing page) always ran ~16px taller than the viewport,
+   producing a small persistent scrollbar. */
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}

@@ -108,7 +108,7 @@
 }
 
 .headline {
-  font-family: var(--font-headline);
+  font-family: var(--font-body);
   font-size: 32px;
   font-weight: 700;
   margin: 0;
@@ -154,6 +154,20 @@
 .ctaButton:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* Green variant of the CTA, used only where requested (Screen A's intro
+   Continue button) — swaps to the button's normal deep-purple background
+   on hover. Text flips to dark on the bright green for legible contrast,
+   back to white on the purple hover state. */
+.ctaButtonGreen {
+  background: var(--aeza-green);
+  color: #0f131e;
+}
+
+.ctaButtonGreen:hover:not(:disabled) {
+  background: var(--aeza-purple-deep);
+  color: #ffffff;
 }
 
 /* Dark glass-morphism card, shared by feature media containers and the form */
@@ -213,12 +227,14 @@
   overflow: hidden;
 }
 
-.placeholderIcon {
-  color: rgba(255, 255, 255, 0.6);
+.featureImage {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .featureTitle {
-  font-family: var(--font-headline);
+  font-family: var(--font-body);
   font-size: 22px;
   font-weight: 700;
   margin: 0 0 12px;
@@ -260,9 +276,10 @@
 }
 
 .formHeading {
-  font-family: var(--font-headline);
-  font-size: 24px;
+  font-family: var(--font-body);
+  font-size: 21px;
   font-weight: 700;
+  letter-spacing: -0.01em;
   margin: 0;
   color: #ffffff;
 }
@@ -318,31 +335,13 @@
   color: #f0f0f0;
 }
 
-.inputWithIcon {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.fieldIcon {
-  position: absolute;
-  left: 13px;
-  color: rgba(255, 255, 255, 0.4);
-  pointer-events: none;
-  transition: color 0.2s ease;
-}
-
-.inputWithIcon:focus-within .fieldIcon {
-  color: var(--aeza-green);
-}
-
 .darkInput {
   width: 100%;
   box-sizing: border-box;
   background: rgba(255, 255, 255, 0.07);
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 10px;
-  padding: 12px 14px 12px 40px;
+  padding: 12px 14px;
   color: #ffffff;
   font-family: var(--font-body);
   font-size: 14px;
@@ -366,49 +365,76 @@
   cursor: not-allowed;
 }
 
-.darkSelect {
-  appearance: none;
-  -webkit-appearance: none;
-  -moz-appearance: none;
+/* Custom category dropdown — a native <select>'s popup can't be forced to
+   always open below its trigger or have rounded corners (that's OS/browser
+   controlled), so this is a plain positioned panel instead, guaranteeing
+   both. */
+.dropdown {
+  position: relative;
+}
+
+.dropdownTrigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
   cursor: pointer;
+}
+
+.dropdownTrigger::after {
+  content: "";
+  flex-shrink: 0;
+  width: 10px;
+  height: 6px;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23FFFFFF' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 14px center;
-  padding-right: 36px;
+  background-position: center;
 }
 
-.darkSelect:invalid {
-  color: rgba(255, 255, 255, 0.45);
+.dropdownTrigger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
-.darkSelect option {
-  background-color: #1a1a2e;
-  color: #ffffff;
+.dropdownPlaceholder {
+  color: rgba(255, 255, 255, 0.4);
 }
 
-.darkCheckboxRow {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
-  padding: 12px 14px;
+.dropdownPanel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  max-height: 260px;
+  overflow-y: auto;
+  background: #1a1a2e;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  box-shadow: 0 15.7px 62.8px 0 rgba(0, 0, 0, 0.37);
 }
 
-.darkCheckbox {
-  margin-top: 3px;
-  width: 17px;
-  height: 17px;
-  flex-shrink: 0;
-  accent-color: var(--aeza-green);
-}
-
-.darkCheckboxLabel {
+.dropdownOption {
+  padding: 10px 12px;
+  border-radius: 8px;
   font-family: var(--font-body);
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: rgba(240, 240, 240, 0.85);
+  font-size: 14px;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.dropdownOption:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dropdownOptionActive {
+  background: rgba(110, 254, 66, 0.15);
+  color: var(--aeza-green);
 }
 
 .formSubmitButton {

@@ -41,13 +41,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const formData = await request.formData();
 
-  const aiTrainingConsent = formData.get("aiTrainingConsent") === "true";
-  if (!aiTrainingConsent) {
-    return {
-      error: "You must agree to the data use terms before continuing.",
-    };
-  }
-
   const brandName = String(formData.get("brandName") ?? "").trim();
   const contactEmail = String(formData.get("contactEmail") ?? "").trim();
   const contactPhone = String(formData.get("contactPhone") ?? "").trim();
@@ -74,8 +67,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       contactPhone,
       websiteUrl,
       category,
-      aiTrainingConsent: true,
-      consentTimestamp: new Date(),
       status: "pending_review",
     },
   });
@@ -115,12 +106,7 @@ export default function Index() {
         <ScreenB
           isSubmitting={isSubmitting}
           error={serverError}
-          onSubmit={(data) =>
-            fetcher.submit(
-              { ...data, aiTrainingConsent: "true" },
-              { method: "POST" },
-            )
-          }
+          onSubmit={(data) => fetcher.submit(data, { method: "POST" })}
         />
       )}
       {screen === "C" && <ScreenC />}
