@@ -10,10 +10,8 @@ import type { IPlayerProps } from "@lottiefiles/react-lottie-player";
 import logoVideoUrl from "../../assets/aeza-logo-animation/aeza-logo-reveal-transparent.webm";
 import aezaShopLottieUrl from "../../assets/lottie-jsons/Aeza-Shop.json?url";
 import aezaSizeLottieUrl from "../../assets/lottie-jsons/Aeza-Size.json?url";
+import tryOnTutorialImage from "../../assets/try-on-tutorial.png";
 import styles from "./styles.module.css";
-
-const CONSENT_LABEL =
-  "I agree to allow AEZA to use our product catalog data (titles, descriptions, images, variants) to train AI models for styling and product discovery purposes on the AEZA platform.";
 
 // Module-level caches so the Lottie player module and each animation's JSON
 // are only ever fetched once, no matter how many components ask for them.
@@ -186,80 +184,9 @@ function LottieVisual({ src }: { src: string }) {
   );
 }
 
-function CameraPlaceholderIcon() {
-  return (
-    <svg
-      className={styles.placeholderIcon}
-      width="56"
-      height="56"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M4 8h3l2-2h6l2 2h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z" />
-      <circle cx="12" cy="13" r="3.5" />
-    </svg>
-  );
-}
-
-function FieldIcon({ children }: { children: ReactNode }) {
-  return (
-    <svg
-      className={styles.fieldIcon}
-      width="17"
-      height="17"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {children}
-    </svg>
-  );
-}
-
-const BrandIcon = () => (
-  <FieldIcon>
-    <path d="M20.59 13.41 12 22 2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z" />
-    <circle cx="7" cy="7" r="1.5" />
-  </FieldIcon>
-);
-
-const EmailIcon = () => (
-  <FieldIcon>
-    <rect x="3" y="5" width="18" height="14" rx="2" />
-    <path d="m3 7 9 6 9-6" />
-  </FieldIcon>
-);
-
-const PhoneIcon = () => (
-  <FieldIcon>
-    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92Z" />
-  </FieldIcon>
-);
-
-const WebsiteIcon = () => (
-  <FieldIcon>
-    <circle cx="12" cy="12" r="9" />
-    <path d="M3 12h18M12 3c2.4 2.6 3.6 5.6 3.6 9s-1.2 6.4-3.6 9c-2.4-2.6-3.6-5.6-3.6-9S9.6 5.6 12 3Z" />
-  </FieldIcon>
-);
-
-const CategoryIcon = () => (
-  <FieldIcon>
-    <path d="M20.59 13.41 12 22 2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z" />
-    <circle cx="7" cy="7" r="1.5" />
-  </FieldIcon>
-);
-
-type FeatureVisual = { type: "lottie"; src: string } | { type: "icon" };
+type FeatureVisual =
+  | { type: "lottie"; src: string }
+  | { type: "image"; src: string; alt: string };
 
 function FeatureBullets({ items }: { items: string[] }) {
   return (
@@ -302,7 +229,11 @@ function FeatureRow({
           {visual.type === "lottie" ? (
             <LottieVisual src={visual.src} />
           ) : (
-            <CameraPlaceholderIcon />
+            <img
+              className={styles.featureImage}
+              src={visual.src}
+              alt={visual.alt}
+            />
           )}
         </div>
       </div>
@@ -323,20 +254,99 @@ function FeatureRow({
   );
 }
 
-const FASHION_CATEGORIES = [
-  "Women's Apparel",
-  "Men's Apparel",
-  "Kidswear",
-  "Footwear",
-  "Bags & Accessories",
-  "Jewelry & Watches",
-  "Eyewear",
-  "Activewear & Athleisure",
-  "Ethnic & Festive Wear",
-  "Lingerie & Innerwear",
-  "Beauty & Personal Care",
+const CATEGORY_OPTIONS = [
+  "Streetwear",
+  "Loungewear",
+  "Athleisure",
+  "Formal Wear",
+  "Casual Wear",
+  "Ethnic Wear",
+  "Denim",
+  "Outerwear & Jackets",
+  "Co-ord Sets",
+  "Sleepwear",
+  "Swimwear",
+  "Maternity Wear",
+  "Plus Size",
   "Other",
 ];
+
+function CategoryDropdown({
+  id,
+  value,
+  onChange,
+  disabled,
+}: {
+  id?: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(event.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [open]);
+
+  return (
+    <div className={styles.dropdown} ref={containerRef}>
+      <button
+        id={id}
+        type="button"
+        className={`${styles.darkInput} ${styles.dropdownTrigger}`}
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        <span className={value ? undefined : styles.dropdownPlaceholder}>
+          {value || "Select a category"}
+        </span>
+      </button>
+      {open && (
+        <ul className={styles.dropdownPanel} role="listbox">
+          {CATEGORY_OPTIONS.map((option) => (
+            <li
+              key={option}
+              role="option"
+              tabIndex={0}
+              aria-selected={value === option}
+              className={
+                value === option
+                  ? `${styles.dropdownOption} ${styles.dropdownOptionActive}`
+                  : styles.dropdownOption
+              }
+              onClick={() => {
+                onChange(option);
+                setOpen(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onChange(option);
+                  setOpen(false);
+                }
+              }}
+            >
+              {option}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 export function ScreenB({
   isSubmitting,
@@ -358,18 +368,11 @@ export function ScreenB({
   const [contactPhone, setContactPhone] = useState("");
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [category, setCategory] = useState("");
-  const [consent, setConsent] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
 
   const displayedError = validationError ?? error;
 
   const handleSubmit = () => {
-    if (!consent) {
-      setValidationError(
-        "You must agree to the data use terms before continuing.",
-      );
-      return;
-    }
     if (
       !brandName.trim() ||
       !contactEmail.trim() ||
@@ -422,7 +425,11 @@ export function ScreenB({
             every order.
           </>
         }
-        visual={{ type: "icon" }}
+        visual={{
+          type: "image",
+          src: tryOnTutorialImage,
+          alt: "Virtual try-on tutorial preview",
+        }}
         reversed
       />
       <FeatureRow
@@ -457,66 +464,46 @@ export function ScreenB({
           <label className={styles.darkLabel} htmlFor="brandName">
             Brand name
           </label>
-          <div className={styles.inputWithIcon}>
-            <BrandIcon />
-            <input
-              id="brandName"
-              className={styles.darkInput}
-              type="text"
-              placeholder="Your brand's name"
-              value={brandName}
-              disabled={isSubmitting}
-              required
-              onChange={(event) => setBrandName(event.target.value)}
-            />
-          </div>
+          <input
+            id="brandName"
+            className={styles.darkInput}
+            type="text"
+            placeholder="Your brand's name"
+            value={brandName}
+            disabled={isSubmitting}
+            required
+            onChange={(event) => setBrandName(event.target.value)}
+          />
         </div>
 
         <div className={styles.darkFieldGroup}>
           <label className={styles.darkLabel} htmlFor="websiteUrl">
             Website URL
           </label>
-          <div className={styles.inputWithIcon}>
-            <WebsiteIcon />
-            <input
-              id="websiteUrl"
-              className={styles.darkInput}
-              type="url"
-              inputMode="url"
-              autoComplete="url"
-              placeholder="https://yourbrand.com"
-              value={websiteUrl}
-              disabled={isSubmitting}
-              required
-              onChange={(event) => setWebsiteUrl(event.target.value)}
-            />
-          </div>
+          <input
+            id="websiteUrl"
+            className={styles.darkInput}
+            type="url"
+            inputMode="url"
+            autoComplete="url"
+            placeholder="https://yourbrand.com"
+            value={websiteUrl}
+            disabled={isSubmitting}
+            required
+            onChange={(event) => setWebsiteUrl(event.target.value)}
+          />
         </div>
 
         <div className={styles.darkFieldGroup}>
           <label className={styles.darkLabel} htmlFor="category">
             Category
           </label>
-          <div className={styles.inputWithIcon}>
-            <CategoryIcon />
-            <select
-              id="category"
-              className={`${styles.darkInput} ${styles.darkSelect}`}
-              value={category}
-              disabled={isSubmitting}
-              required
-              onChange={(event) => setCategory(event.target.value)}
-            >
-              <option value="" disabled>
-                Select a category
-              </option>
-              {FASHION_CATEGORIES.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </div>
+          <CategoryDropdown
+            id="category"
+            value={category}
+            disabled={isSubmitting}
+            onChange={setCategory}
+          />
         </div>
 
         <div className={styles.formRow}>
@@ -524,54 +511,33 @@ export function ScreenB({
             <label className={styles.darkLabel} htmlFor="contactEmail">
               Contact email
             </label>
-            <div className={styles.inputWithIcon}>
-              <EmailIcon />
-              <input
-                id="contactEmail"
-                className={styles.darkInput}
-                type="email"
-                placeholder="you@brand.com"
-                value={contactEmail}
-                disabled={isSubmitting}
-                required
-                onChange={(event) => setContactEmail(event.target.value)}
-              />
-            </div>
+            <input
+              id="contactEmail"
+              className={styles.darkInput}
+              type="email"
+              placeholder="you@brand.com"
+              value={contactEmail}
+              disabled={isSubmitting}
+              required
+              onChange={(event) => setContactEmail(event.target.value)}
+            />
           </div>
 
           <div className={styles.darkFieldGroup}>
             <label className={styles.darkLabel} htmlFor="contactPhone">
               Contact phone
             </label>
-            <div className={styles.inputWithIcon}>
-              <PhoneIcon />
-              <input
-                id="contactPhone"
-                className={styles.darkInput}
-                type="tel"
-                placeholder="+91 00000 00000"
-                value={contactPhone}
-                disabled={isSubmitting}
-                required
-                onChange={(event) => setContactPhone(event.target.value)}
-              />
-            </div>
+            <input
+              id="contactPhone"
+              className={styles.darkInput}
+              type="tel"
+              placeholder="+91 00000 00000"
+              value={contactPhone}
+              disabled={isSubmitting}
+              required
+              onChange={(event) => setContactPhone(event.target.value)}
+            />
           </div>
-        </div>
-
-        <div className={styles.darkCheckboxRow}>
-          <input
-            id="aiTrainingConsent"
-            className={styles.darkCheckbox}
-            type="checkbox"
-            checked={consent}
-            disabled={isSubmitting}
-            required
-            onChange={(event) => setConsent(event.target.checked)}
-          />
-          <label className={styles.darkCheckboxLabel} htmlFor="aiTrainingConsent">
-            {CONSENT_LABEL}
-          </label>
         </div>
 
         <button
