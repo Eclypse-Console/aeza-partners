@@ -22,6 +22,18 @@ api_version = "2026-07"
   uri = "https://aeza-partners.vercel.app/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
 
+  [[webhooks.subscriptions]]
+  uri = "https://aeza-partners.vercel.app/webhooks/customers/data_request"
+  topics = [ "customers/data_request" ]
+
+  [[webhooks.subscriptions]]
+  uri = "https://aeza-partners.vercel.app/webhooks/customers/redact"
+  topics = [ "customers/redact" ]
+
+  [[webhooks.subscriptions]]
+  uri = "https://aeza-partners.vercel.app/webhooks/shop/redact"
+  topics = [ "shop/redact" ]
+
 [auth]
 redirect_urls = [ "https://aeza-partners.vercel.app/auth/callback" ]
 
