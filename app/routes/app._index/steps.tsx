@@ -135,7 +135,11 @@ export function ScreenA({ onAdvance }: { onAdvance: () => void }) {
               Dynamic sizing
             </span>
           </div>
-          <button type="button" className={styles.ctaButton} onClick={onAdvance}>
+          <button
+            type="button"
+            className={`${styles.ctaButton} ${styles.introCta}`}
+            onClick={onAdvance}
+          >
             Continue
           </button>
         </div>
@@ -257,13 +261,30 @@ const CategoryIcon = () => (
 
 type FeatureVisual = { type: "lottie"; src: string } | { type: "icon" };
 
+function FeatureBullets({ items }: { items: string[] }) {
+  return (
+    <ul className={styles.featureBulletList}>
+      {items.map((item) => (
+        <li key={item} className={styles.featureBulletItem}>
+          <span className={styles.featureBulletDot} />
+          {item}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function FeatureRow({
+  eyebrow,
   title,
+  large,
   description,
   visual,
   reversed,
 }: {
+  eyebrow?: string;
   title: string;
+  large?: boolean;
   description: ReactNode;
   visual: FeatureVisual;
   reversed?: boolean;
@@ -286,8 +307,17 @@ function FeatureRow({
         </div>
       </div>
       <div className={styles.featureRowText}>
-        <h3 className={styles.featureTitle}>{title}</h3>
-        <p className={styles.featureDescription}>{description}</p>
+        {eyebrow && <p className={styles.featureEyebrow}>{eyebrow}</p>}
+        <h3
+          className={
+            large
+              ? `${styles.featureTitle} ${styles.featureTitleLarge}`
+              : styles.featureTitle
+          }
+        >
+          {title}
+        </h3>
+        <div className={styles.featureDescription}>{description}</div>
       </div>
     </div>
   );
@@ -357,17 +387,27 @@ export function ScreenB({
   return (
     <div className={styles.screenB}>
       <FeatureRow
-        title="AI Stylist"
+        eyebrow="01 · DISCOVERY"
+        title="Conversation that sells your catalog"
+        large
         description={
           <>
-            Turn conversation into sales. Aeza&apos;s AI stylist recommends
-            outfits straight from your catalog, so shoppers discover more of
-            what you sell driving{" "}
-            <span className={styles.accentGreen}>higher order value</span>{" "}
-            and <span className={styles.accentGreen}>repeat visits</span>.
+            <p className={styles.featureDescriptionText}>
+              Shoppers describe the occasion, not the SKU. Aeza&apos;s
+              stylist builds the look from products you already sell — so
+              discovery pulls more of your catalog into every cart.
+            </p>
+            <FeatureBullets
+              items={[
+                "Outfit-level recommendations, not single-item search",
+                "Higher order value and repeat visits",
+                "No merchandising work on your side",
+              ]}
+            />
           </>
         }
         visual={{ type: "lottie", src: aezaShopLottieUrl }}
+        reversed
       />
       <FeatureRow
         title="Virtual Try-On"

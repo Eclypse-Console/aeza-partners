@@ -186,27 +186,37 @@
 }
 
 /* Primary CTA button — used on every screen except confirmation.
-   Solid deep purple chosen over the green→purple gradient: at #6efe42's
-   luminance a 135deg gradient into #a855f7 read as neon, so this uses the
-   spec's documented fallback. */
+   Green by default; hover swaps to the deep purple that used to be the
+   button's resting color, so the accent still shows up on interaction. */
 .ctaButton {
   font-family: var(--font-body);
   font-size: 15px;
   font-weight: 600;
-  color: #ffffff;
-  background: var(--aeza-purple-deep);
+  color: #0f131e;
+  background: var(--aeza-green);
   border: none;
   border-radius: var(--radius-button);
   padding: 12px 28px;
   cursor: pointer;
   box-shadow: none;
   transition:
+    background-color 0.2s ease,
+    color 0.2s ease,
     box-shadow 0.2s ease,
     transform 0.1s ease;
 }
 
 .ctaButton:hover:not(:disabled) {
+  background: var(--aeza-purple-deep);
+  color: #ffffff;
   box-shadow: var(--shadow-cta-glow);
+}
+
+/* Extra breathing room above the intro screen's Continue button only —
+   .ctaButton is shared with the Screen B form submit button, which
+   shouldn't pick up this spacing. */
+.introCta {
+  margin-top: 12px;
 }
 
 .ctaButton:active:not(:disabled) {
@@ -279,6 +289,16 @@
   color: rgba(255, 255, 255, 0.6);
 }
 
+.featureEyebrow {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: rgba(196, 175, 235, 0.75);
+  margin: 0 0 12px;
+}
+
 .featureTitle {
   font-family: var(--font-headline);
   font-size: 22px;
@@ -287,12 +307,44 @@
   color: #ffffff;
 }
 
+.featureTitleLarge {
+  font-size: 34px;
+  line-height: 1.2;
+}
+
 .featureDescription {
   font-family: var(--font-body);
   font-size: 15px;
   line-height: 1.6;
   margin: 0;
   color: #f0f0f0;
+}
+
+.featureDescriptionText {
+  margin: 0 0 20px;
+}
+
+.featureBulletList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.featureBulletItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.featureBulletDot {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 2px solid var(--aeza-green);
+  flex-shrink: 0;
 }
 
 @media (max-width: 720px) {
