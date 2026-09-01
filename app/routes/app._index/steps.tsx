@@ -400,7 +400,7 @@ export function ScreenB({
           <>
             <p className={styles.featureDescriptionText}>
               Shoppers describe the occasion, not the SKU. Aeza&apos;s
-              stylist builds the look from products you already sell — so
+              stylist builds the look from products you already sell, so
               discovery pulls more of your catalog into every cart.
             </p>
             <FeatureBullets
@@ -442,11 +442,11 @@ export function ScreenB({
       />
       <FeatureRow
         eyebrow="03 · FIT & SETUP"
-        title="Your size chart, learned — and you're live in a minute"
+        title="Your size chart, learned, and you're live in a minute"
         large
         description={
           <>
-            Generic charts don&apos;t work — an L in one brand isn&apos;t an
+            Generic charts don&apos;t work: an L in one brand isn&apos;t an
             L in yours. Aeza maps each shopper to your real measurements, so
             fewer wrong-size orders leave your warehouse.
           </>
@@ -569,7 +569,7 @@ export function ScreenC() {
       <div className={styles.stepInner}>
         <h1 className={styles.headline}>You&apos;re onboarded to Aeza</h1>
         <p className={styles.body}>
-          Congratulations — you&apos;re onboarded to Aeza. We&apos;ll be in
+          Congratulations, you&apos;re onboarded to Aeza. We&apos;ll be in
           touch shortly.
         </p>
       </div>
