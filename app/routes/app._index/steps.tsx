@@ -5,6 +5,7 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
+import { useFetcher } from "react-router";
 import type { IPlayerProps } from "@lottiefiles/react-lottie-player";
 
 import logoVideoUrl from "../../assets/aeza-logo-animation/aeza-logo-reveal-transparent.webm";
@@ -561,18 +562,191 @@ export function ScreenB({
   );
 }
 
-// ---------- Screen C: confirmation ----------
+// ---------- Screen C: product dashboard ----------
 
-export function ScreenC() {
+export type DashboardProduct = {
+  id: string;
+  title: string;
+  status: string;
+  imageUrl: string | null;
+  published: boolean;
+  syncStatus: string;
+};
+
+type PageInfo = { hasNextPage: boolean; endCursor: string | null };
+
+function ProductStatusBadge({
+  published,
+  syncStatus,
+}: {
+  published: boolean;
+  syncStatus: string;
+}) {
+  if (!published) {
+    return (
+      <span className={`${styles.statusBadge} ${styles.statusBadgeIdle}`}>
+        Not published
+      </span>
+    );
+  }
+  if (syncStatus === "error") {
+    return (
+      <span className={`${styles.statusBadge} ${styles.statusBadgeError}`}>
+        Needs attention
+      </span>
+    );
+  }
   return (
-    <div className={styles.screenAStage}>
-      <div className={styles.stepInner}>
-        <h1 className={styles.headline}>You&apos;re onboarded to Aeza</h1>
+    <span className={`${styles.statusBadge} ${styles.statusBadgePublished}`}>
+      Published to Aeza
+    </span>
+  );
+}
+
+type ToggleResponse =
+  | { product: { id: string; published: boolean; syncStatus: string } }
+  | { error: string };
+
+function ProductRow({ product }: { product: DashboardProduct }) {
+  const fetcher = useFetcher<ToggleResponse>();
+  const pending = fetcher.state !== "idle";
+
+  // Optimistic: while a toggle is in flight, reflect the state being sent
+  // rather than waiting for the round trip, so the switch feels immediate.
+  const optimisticPublished = fetcher.formData
+    ? fetcher.formData.get("published") === "true"
+    : (fetcher.data && "product" in fetcher.data
+        ? fetcher.data.product.published
+        : product.published);
+
+  const syncStatus =
+    fetcher.data && "product" in fetcher.data
+      ? fetcher.data.product.syncStatus
+      : product.syncStatus;
+
+  const error = fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
+
+  const toggle = () => {
+    fetcher.submit(
+      { productId: product.id, published: String(!optimisticPublished) },
+      { method: "POST", action: "/app/products/toggle" },
+    );
+  };
+
+  return (
+    <div className={styles.productRow}>
+      <div className={styles.productRowMedia}>
+        {product.imageUrl ? (
+          <img
+            src={product.imageUrl}
+            alt=""
+            className={styles.productThumb}
+          />
+        ) : (
+          <div className={styles.productThumbPlaceholder} aria-hidden="true" />
+        )}
+      </div>
+
+      <div className={styles.productRowInfo}>
+        <p className={styles.productTitle}>{product.title}</p>
+        <ProductStatusBadge
+          published={optimisticPublished}
+          syncStatus={syncStatus}
+        />
+        {error && <p className={styles.productRowError}>{error}</p>}
+      </div>
+
+      <button
+        type="button"
+        role="switch"
+        aria-checked={optimisticPublished}
+        aria-label={`Publish ${product.title} to Aeza`}
+        className={`${styles.toggleSwitch} ${optimisticPublished ? styles.toggleSwitchOn : ""}`}
+        disabled={pending}
+        onClick={toggle}
+      >
+        <span className={styles.toggleSwitchKnob} />
+      </button>
+    </div>
+  );
+}
+
+export function ScreenC({
+  brandName,
+  initialProducts,
+  initialPageInfo,
+  productsError,
+}: {
+  brandName: string;
+  initialProducts: DashboardProduct[];
+  initialPageInfo: PageInfo;
+  productsError: string | null;
+}) {
+  const [products, setProducts] = useState(initialProducts);
+  const [pageInfo, setPageInfo] = useState(initialPageInfo);
+  const loadMoreFetcher = useFetcher<{
+    products: DashboardProduct[];
+    pageInfo: PageInfo;
+    error: string | null;
+  }>();
+
+  useEffect(() => {
+    if (!loadMoreFetcher.data) return;
+    if (loadMoreFetcher.data.error) return;
+    setProducts((prev) => [...prev, ...loadMoreFetcher.data!.products]);
+    setPageInfo(loadMoreFetcher.data.pageInfo);
+    // Only re-run when a fresh page actually arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadMoreFetcher.data]);
+
+  const loadMore = () => {
+    if (!pageInfo.endCursor) return;
+    loadMoreFetcher.load(`/app/products/list?after=${pageInfo.endCursor}`);
+  };
+
+  return (
+    <div className={styles.dashboardWrapper}>
+      <div className={styles.dashboardHeader}>
+        <h1 className={styles.headline}>You&apos;re connected to Aeza</h1>
         <p className={styles.body}>
-          Congratulations, you&apos;re onboarded to Aeza. We&apos;ll be in
-          touch shortly.
+          {brandName ? `${brandName} — ` : ""}choose which products to
+          publish to Aeza&apos;s marketplace. You can change this anytime.
         </p>
       </div>
+
+      {productsError && (
+        <div className={styles.errorBanner}>{productsError}</div>
+      )}
+
+      {!productsError && products.length === 0 && (
+        <div className={styles.emptyState}>
+          No products found in this store yet. Add products in Shopify, then
+          refresh this page.
+        </div>
+      )}
+
+      {products.length > 0 && (
+        <div className={styles.productList}>
+          {products.map((product) => (
+            <ProductRow key={product.id} product={product} />
+          ))}
+        </div>
+      )}
+
+      {pageInfo.hasNextPage && (
+        <button
+          type="button"
+          className={styles.loadMoreButton}
+          disabled={loadMoreFetcher.state !== "idle"}
+          onClick={loadMore}
+        >
+          {loadMoreFetcher.state !== "idle" ? "Loading…" : "Load more products"}
+        </button>
+      )}
+
+      {loadMoreFetcher.data?.error && (
+        <div className={styles.errorBanner}>{loadMoreFetcher.data.error}</div>
+      )}
     </div>
   );
 }

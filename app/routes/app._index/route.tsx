@@ -8,27 +8,58 @@ import { useFetcher, useLoaderData } from "react-router";
 import { authenticate } from "../../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../../db.server";
+import { fetchShopifyProducts, mergeWithPublishState } from "../../models/products.server";
 
 import { ScreenA, ScreenB, ScreenC } from "./steps";
 import styles from "./styles.module.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
 
   const url = new URL(request.url);
   const resetOnboarding =
     process.env.NODE_ENV === "development" &&
     url.searchParams.get("resetOnboarding") === "true";
 
+  const empty = {
+    brandProfile: null,
+    products: [] as Awaited<ReturnType<typeof mergeWithPublishState>>,
+    pageInfo: { hasNextPage: false, endCursor: null as string | null },
+    productsError: null as string | null,
+  };
+
   if (resetOnboarding) {
-    return { brandProfile: null };
+    return empty;
   }
 
   const brandProfile = await prisma.brandProfile.findUnique({
     where: { shop: session.shop },
   });
 
-  return { brandProfile };
+  if (!brandProfile) {
+    return { ...empty, brandProfile: null };
+  }
+
+  // A brand only needs its product list once onboarding is complete, and a
+  // hiccup fetching it (Shopify API hiccup, rate limit) shouldn't take down
+  // the whole page — the dashboard still renders with a clear "couldn't
+  // load, try again" state instead of a hard error boundary.
+  try {
+    const { products, pageInfo } = await fetchShopifyProducts(admin, {
+      first: 25,
+    });
+    const merged = await mergeWithPublishState(session.shop, products);
+    return { brandProfile, products: merged, pageInfo, productsError: null };
+  } catch (error) {
+    console.error("Failed to load products for dashboard:", error);
+    return {
+      brandProfile,
+      products: [],
+      pageInfo: { hasNextPage: false, endCursor: null },
+      productsError:
+        "Couldn't load your products from Shopify. Refresh to try again.",
+    };
+  }
 };
 
 function normalizeWebsiteUrl(raw: string): string {
@@ -85,7 +116,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 type OnboardingScreen = "A" | "B" | "C";
 
 export default function Index() {
-  const { brandProfile } = useLoaderData<typeof loader>();
+  const { brandProfile, products, pageInfo, productsError } =
+    useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
   const [screen, setScreen] = useState<OnboardingScreen>(
@@ -117,7 +149,18 @@ export default function Index() {
           onSubmit={(data) => fetcher.submit(data, { method: "POST" })}
         />
       )}
-      {screen === "C" && <ScreenC />}
+      {screen === "C" && (
+        <ScreenC
+          brandName={
+            justSaved && "brandName" in justSaved
+              ? justSaved.brandName
+              : (brandProfile?.brandName ?? "")
+          }
+          initialProducts={products}
+          initialPageInfo={pageInfo}
+          productsError={productsError}
+        />
+      )}
     </div>
   );
 }

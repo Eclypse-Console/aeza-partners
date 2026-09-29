@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
-import { ScreenA, ScreenB, ScreenC } from "../app._index/steps";
+import {
+  ScreenA,
+  ScreenB,
+  ScreenC,
+  type DashboardProduct,
+} from "../app._index/steps";
 import onboardingStyles from "../app._index/styles.module.css";
 import styles from "./styles.module.css";
 
@@ -16,6 +21,36 @@ export const loader = async () => {
 };
 
 type OnboardingScreen = "A" | "B" | "C";
+
+// Static sample catalog so the dashboard can be previewed without a store.
+// Toggles here will POST to /app/products/toggle and fail (no session) —
+// the preview is for layout only.
+const MOCK_PRODUCTS: DashboardProduct[] = [
+  {
+    id: "gid://shopify/Product/1",
+    title: "Sample tee",
+    status: "ACTIVE",
+    imageUrl: null,
+    published: true,
+    syncStatus: "recorded",
+  },
+  {
+    id: "gid://shopify/Product/2",
+    title: "Sample hoodie",
+    status: "ACTIVE",
+    imageUrl: null,
+    published: false,
+    syncStatus: "idle",
+  },
+  {
+    id: "gid://shopify/Product/3",
+    title: "Sample cap",
+    status: "DRAFT",
+    imageUrl: null,
+    published: true,
+    syncStatus: "error",
+  },
+];
 
 export default function DevPreview() {
   const [screen, setScreen] = useState<OnboardingScreen>("A");
@@ -60,7 +95,14 @@ export default function DevPreview() {
             }}
           />
         )}
-        {screen === "C" && <ScreenC />}
+        {screen === "C" && (
+          <ScreenC
+            brandName="Preview Brand"
+            initialProducts={MOCK_PRODUCTS}
+            initialPageInfo={{ hasNextPage: false, endCursor: null }}
+            productsError={null}
+          />
+        )}
       </div>
     </AppProvider>
   );
