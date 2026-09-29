@@ -52,3 +52,26 @@ model BrandProfile {
 
   @@schema("shopify_connector")
 }
+
+// Tracks which of a shop's Shopify products the brand has chosen to publish
+// to Aeza, and the state of that decision. `title`/`imageUrl` are always
+// re-fetched from Shopify's Admin API server-side before being written here
+// (never trusted from the client) so this table can't be poisoned with
+// forged product data. `syncStatus`/`syncError` are placeholders for a real
+// AEZA-side sync call to be wired in later without changing this shape.
+model PublishedProduct {
+  id           Int       @id @default(autoincrement())
+  shop         String
+  productId    String
+  title        String
+  imageUrl     String?
+  published    Boolean   @default(false)
+  syncStatus   String    @default("idle") // idle | recorded | syncing | error
+  syncError    String?
+  lastSyncedAt DateTime?
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([shop, productId])
+  @@index([shop])
+  @@schema("shopify_connector")
+}

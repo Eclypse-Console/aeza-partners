@@ -19,6 +19,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     case "SHOP_REDACT":
       await db.session.deleteMany({ where: { shop } });
       await db.brandProfile.deleteMany({ where: { shop } });
+      await db.publishedProduct.deleteMany({ where: { shop } });
       break;
   }
 
