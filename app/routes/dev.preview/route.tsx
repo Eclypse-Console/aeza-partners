@@ -100,6 +100,8 @@ export default function DevPreview() {
             brandName="Preview Brand"
             initialProducts={MOCK_PRODUCTS}
             initialPageInfo={{ hasNextPage: false, endCursor: null }}
+            initialCounts={{ published: 0, total: MOCK_PRODUCTS.length }}
+            collections={[]}
             productsError={null}
           />
         )}

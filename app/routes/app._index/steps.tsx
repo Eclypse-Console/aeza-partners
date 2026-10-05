@@ -275,14 +275,20 @@ const CATEGORY_OPTIONS = [
   "Other",
 ];
 
-function CategoryDropdown({
+type DropdownOption = { value: string; label: string };
+
+function ListDropdown({
   id,
   value,
+  options,
+  placeholder,
   onChange,
   disabled,
 }: {
   id?: string;
   value: string;
+  options: DropdownOption[];
+  placeholder: string;
   onChange: (value: string) => void;
   disabled: boolean;
 }) {
@@ -303,6 +309,8 @@ function CategoryDropdown({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [open]);
 
+  const selected = options.find((option) => option.value === value);
+
   return (
     <div className={styles.dropdown} ref={containerRef}>
       <button
@@ -314,41 +322,68 @@ function CategoryDropdown({
         aria-expanded={open}
         onClick={() => setOpen((prev) => !prev)}
       >
-        <span className={value ? undefined : styles.dropdownPlaceholder}>
-          {value || "Select a category"}
+        <span className={selected ? undefined : styles.dropdownPlaceholder}>
+          {selected ? selected.label : placeholder}
         </span>
       </button>
       {open && (
         <ul className={styles.dropdownPanel} role="listbox">
-          {CATEGORY_OPTIONS.map((option) => (
+          {options.map((option) => (
             <li
-              key={option}
+              key={option.value}
               role="option"
               tabIndex={0}
-              aria-selected={value === option}
+              aria-selected={value === option.value}
               className={
-                value === option
+                value === option.value
                   ? `${styles.dropdownOption} ${styles.dropdownOptionActive}`
                   : styles.dropdownOption
               }
               onClick={() => {
-                onChange(option);
+                onChange(option.value);
                 setOpen(false);
               }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  onChange(option);
+                  onChange(option.value);
                   setOpen(false);
                 }
               }}
             >
-              {option}
+              {option.label}
             </li>
           ))}
         </ul>
       )}
     </div>
+  );
+}
+
+const CATEGORY_DROPDOWN_OPTIONS: DropdownOption[] = CATEGORY_OPTIONS.map(
+  (option) => ({ value: option, label: option }),
+);
+
+function CategoryDropdown({
+  id,
+  value,
+  onChange,
+  disabled,
+}: {
+  id?: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <ListDropdown
+      id={id}
+      value={value}
+      options={CATEGORY_DROPDOWN_OPTIONS}
+      placeholder="Select a category"
+      onChange={onChange}
+      disabled={disabled}
+    />
   );
 }
 
@@ -574,6 +609,41 @@ export type DashboardProduct = {
 };
 
 type PageInfo = { hasNextPage: boolean; endCursor: string | null };
+type Collection = { id: string; title: string; productCount: number };
+type Counts = { published: number; total: number | null };
+
+type ListResponse = {
+  products: DashboardProduct[];
+  pageInfo: PageInfo;
+  counts: Counts | null;
+  error: string | null;
+};
+
+type ToggleResponse =
+  | { product: { id: string; published: boolean; syncStatus: string } }
+  | { error: string };
+
+type BulkResponse =
+  | {
+      affected: number;
+      truncated: boolean;
+      nextCursor: string | null;
+      limit: number;
+      published: boolean;
+    }
+  | { error: string };
+
+type Notice = {
+  kind: "success" | "error";
+  text: string;
+  // Set when a bulk run stopped at its safety limit: the cursor to continue
+  // from, and which direction (publish / unpublish) it was running.
+  resume?: { cursor: string; published: boolean };
+};
+
+function plural(count: number, word: string) {
+  return `${count.toLocaleString()} ${word}${count === 1 ? "" : "s"}`;
+}
 
 function ProductStatusBadge({
   published,
@@ -603,32 +673,37 @@ function ProductStatusBadge({
   );
 }
 
-type ToggleResponse =
-  | { product: { id: string; published: boolean; syncStatus: string } }
-  | { error: string };
-
-function ProductRow({ product }: { product: DashboardProduct }) {
+function ProductRow({
+  product,
+  onToggled,
+}: {
+  product: DashboardProduct;
+  onToggled: (productId: string, published: boolean) => void;
+}) {
   const fetcher = useFetcher<ToggleResponse>();
   const pending = fetcher.state !== "idle";
 
-  // Optimistic: while a toggle is in flight, reflect the state being sent
-  // rather than waiting for the round trip, so the switch feels immediate.
-  const optimisticPublished = fetcher.formData
+  // Optimistic: while a toggle is in flight, show the state being sent
+  // rather than waiting for the round trip. Once it settles, the parent's
+  // product list (updated through onToggled) is the source of truth.
+  const published = fetcher.formData
     ? fetcher.formData.get("published") === "true"
-    : (fetcher.data && "product" in fetcher.data
-        ? fetcher.data.product.published
-        : product.published);
+    : product.published;
 
-  const syncStatus =
-    fetcher.data && "product" in fetcher.data
-      ? fetcher.data.product.syncStatus
-      : product.syncStatus;
+  const error =
+    fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
 
-  const error = fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
+  useEffect(() => {
+    if (fetcher.data && "product" in fetcher.data) {
+      onToggled(fetcher.data.product.id, fetcher.data.product.published);
+    }
+    // Only react to a freshly arrived response, not to parent re-renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetcher.data]);
 
   const toggle = () => {
     fetcher.submit(
-      { productId: product.id, published: String(!optimisticPublished) },
+      { productId: product.id, published: String(!published) },
       { method: "POST", action: "/app/products/toggle" },
     );
   };
@@ -637,11 +712,7 @@ function ProductRow({ product }: { product: DashboardProduct }) {
     <div className={styles.productRow}>
       <div className={styles.productRowMedia}>
         {product.imageUrl ? (
-          <img
-            src={product.imageUrl}
-            alt=""
-            className={styles.productThumb}
-          />
+          <img src={product.imageUrl} alt="" className={styles.productThumb} />
         ) : (
           <div className={styles.productThumbPlaceholder} aria-hidden="true" />
         )}
@@ -650,8 +721,8 @@ function ProductRow({ product }: { product: DashboardProduct }) {
       <div className={styles.productRowInfo}>
         <p className={styles.productTitle}>{product.title}</p>
         <ProductStatusBadge
-          published={optimisticPublished}
-          syncStatus={syncStatus}
+          published={published}
+          syncStatus={product.syncStatus}
         />
         {error && <p className={styles.productRowError}>{error}</p>}
       </div>
@@ -659,9 +730,9 @@ function ProductRow({ product }: { product: DashboardProduct }) {
       <button
         type="button"
         role="switch"
-        aria-checked={optimisticPublished}
+        aria-checked={published}
         aria-label={`Publish ${product.title} to Aeza`}
-        className={`${styles.toggleSwitch} ${optimisticPublished ? styles.toggleSwitchOn : ""}`}
+        className={`${styles.toggleSwitch} ${published ? styles.toggleSwitchOn : ""}`}
         disabled={pending}
         onClick={toggle}
       >
@@ -675,60 +746,309 @@ export function ScreenC({
   brandName,
   initialProducts,
   initialPageInfo,
+  initialCounts,
+  collections,
   productsError,
 }: {
   brandName: string;
   initialProducts: DashboardProduct[];
   initialPageInfo: PageInfo;
+  initialCounts: Counts;
+  collections: Collection[];
   productsError: string | null;
 }) {
   const [products, setProducts] = useState(initialProducts);
   const [pageInfo, setPageInfo] = useState(initialPageInfo);
-  const loadMoreFetcher = useFetcher<{
-    products: DashboardProduct[];
-    pageInfo: PageInfo;
-    error: string | null;
-  }>();
+  const [counts, setCounts] = useState(initialCounts);
+  const [collectionId, setCollectionId] = useState("");
+  const [viewVersion, setViewVersion] = useState(0);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [confirming, setConfirming] = useState<"publish" | "unpublish" | null>(
+    null,
+  );
 
-  useEffect(() => {
-    if (!loadMoreFetcher.data) return;
-    if (loadMoreFetcher.data.error) return;
-    setProducts((prev) => [...prev, ...loadMoreFetcher.data!.products]);
-    setPageInfo(loadMoreFetcher.data.pageInfo);
-    // Only re-run when a fresh page actually arrives.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadMoreFetcher.data]);
+  const listFetcher = useFetcher<ListResponse>();
+  const bulkFetcher = useFetcher<BulkResponse>();
+  // Whether the in-flight list request replaces the list (first page of a
+  // view) or extends it ("Load more").
+  const loadModeRef = useRef<"replace" | "append">("replace");
 
-  const loadMore = () => {
-    if (!pageInfo.endCursor) return;
-    loadMoreFetcher.load(`/app/products/list?after=${pageInfo.endCursor}`);
+  const listLoading = listFetcher.state !== "idle";
+  const bulkRunning = bulkFetcher.state !== "idle";
+  const busy = listLoading || bulkRunning;
+
+  const selectedCollection = collections.find(
+    (collection) => collection.id === collectionId,
+  );
+  const scopeLabel = selectedCollection
+    ? `in “${selectedCollection.title}”`
+    : "in your store";
+
+  const collectionOptions: DropdownOption[] = [
+    { value: "", label: "All products" },
+    ...collections.map((collection) => ({
+      value: collection.id,
+      label: `${collection.title} (${collection.productCount})`,
+    })),
+  ];
+
+  const loadView = (collection: string, after?: string | null) => {
+    loadModeRef.current = after ? "append" : "replace";
+    const params = new URLSearchParams();
+    if (collection) params.set("collection", collection);
+    if (after) params.set("after", after);
+    listFetcher.load(`/app/products/list?${params.toString()}`);
   };
+
+  // Apply a freshly loaded page: replace the list for a new view, or append
+  // for "Load more" (skipping any product already shown).
+  useEffect(() => {
+    const data = listFetcher.data;
+    if (!data || data.error) return;
+
+    if (loadModeRef.current === "append") {
+      setProducts((previous) => {
+        const seen = new Set(previous.map((product) => product.id));
+        return [
+          ...previous,
+          ...data.products.filter((product) => !seen.has(product.id)),
+        ];
+      });
+    } else {
+      setProducts(data.products);
+      setViewVersion((version) => version + 1);
+    }
+    setPageInfo(data.pageInfo);
+    if (data.counts) setCounts(data.counts);
+    // Only react to a freshly arrived response.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listFetcher.data]);
+
+  // A bulk action finished: report it, then reload the current view so every
+  // row and the counts reflect what actually changed on the server.
+  useEffect(() => {
+    const data = bulkFetcher.data;
+    if (!data) return;
+
+    if ("error" in data) {
+      setNotice({ kind: "error", text: data.error });
+      return;
+    }
+
+    const verb = data.published ? "published to Aeza" : "unpublished";
+    const summary =
+      data.affected === 0
+        ? "Nothing to change. Everything was already up to date."
+        : `${plural(data.affected, "product")} ${verb}.`;
+
+    setNotice({
+      kind: "success",
+      text: data.truncated
+        ? `${summary} Stopped after ${data.limit.toLocaleString()} products. Continue to process the rest.`
+        : summary,
+      resume:
+        data.truncated && data.nextCursor
+          ? { cursor: data.nextCursor, published: data.published }
+          : undefined,
+    });
+    loadView(collectionId);
+    // Only react to a freshly arrived response.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bulkFetcher.data]);
+
+  const handleToggled = (productId: string, published: boolean) => {
+    const current = products.find((product) => product.id === productId);
+    if (!current || current.published === published) return;
+
+    setProducts((previous) =>
+      previous.map((product) =>
+        product.id === productId
+          ? { ...product, published, syncStatus: "recorded" }
+          : product,
+      ),
+    );
+    setCounts((previous) => ({
+      ...previous,
+      published: Math.max(0, previous.published + (published ? 1 : -1)),
+    }));
+  };
+
+  const changeCollection = (nextCollectionId: string) => {
+    setCollectionId(nextCollectionId);
+    setNotice(null);
+    setConfirming(null);
+    loadView(nextCollectionId);
+  };
+
+  const runBulk = (published: boolean, cursor?: string) => {
+    setConfirming(null);
+    setNotice(null);
+    bulkFetcher.submit(
+      {
+        published: String(published),
+        collectionId,
+        ...(cursor ? { after: cursor } : {}),
+      },
+      { method: "POST", action: "/app/products/bulk" },
+    );
+  };
+
+  const listError = listFetcher.data?.error ?? null;
 
   return (
     <div className={styles.dashboardWrapper}>
       <div className={styles.dashboardHeader}>
         <h1 className={styles.headline}>You&apos;re connected to Aeza</h1>
         <p className={styles.body}>
-          {brandName ? `${brandName} — ` : ""}choose which products to
-          publish to Aeza&apos;s marketplace. You can change this anytime.
+          {brandName ? `${brandName}: ` : ""}choose which products to
+          publish to Aeza&apos;s marketplace. Publish everything in one click,
+          a whole collection at a time, or pick products one by one. You can
+          change this anytime.
         </p>
       </div>
+
+      {!productsError && (
+        <>
+          <div className={styles.statsBar}>
+            <div className={styles.statBlock}>
+              <p className={styles.statNumber}>
+                {counts.published.toLocaleString()}
+              </p>
+              <p className={styles.statCaption}>published to Aeza</p>
+            </div>
+            {counts.total !== null && (
+              <div className={styles.statBlock}>
+                <p className={styles.statNumberMuted}>
+                  {counts.total.toLocaleString()}
+                </p>
+                <p className={styles.statCaption}>
+                  {counts.total === 1 ? "product" : "products"} {scopeLabel}
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className={styles.toolbar}>
+            {collections.length > 0 && (
+              <div className={styles.toolbarField}>
+                <label className={styles.darkLabel} htmlFor="collectionFilter">
+                  Filter by collection
+                </label>
+                <ListDropdown
+                  id="collectionFilter"
+                  value={collectionId}
+                  options={collectionOptions}
+                  placeholder="All products"
+                  disabled={busy}
+                  onChange={changeCollection}
+                />
+              </div>
+            )}
+
+            <div className={styles.bulkActions}>
+              {confirming ? (
+                <>
+                  <span className={styles.bulkConfirmText}>
+                    {confirming === "publish" ? "Publish" : "Unpublish"} every
+                    product {scopeLabel}?
+                  </span>
+                  <button
+                    type="button"
+                    className={styles.bulkButtonPrimary}
+                    disabled={busy}
+                    onClick={() => runBulk(confirming === "publish")}
+                  >
+                    Yes, {confirming}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.bulkButton}
+                    onClick={() => setConfirming(null)}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className={styles.bulkButtonPrimary}
+                    disabled={busy}
+                    onClick={() => setConfirming("publish")}
+                  >
+                    {selectedCollection ? "Publish collection" : "Publish all"}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.bulkButton}
+                    disabled={busy}
+                    onClick={() => setConfirming("unpublish")}
+                  >
+                    {selectedCollection
+                      ? "Unpublish collection"
+                      : "Unpublish all"}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
+      {bulkRunning && (
+        <div className={styles.infoBanner}>
+          Updating products… this can take a moment for large catalogs.
+        </div>
+      )}
+
+      {notice && (
+        <div
+          className={
+            notice.kind === "success" ? styles.successBanner : styles.errorBanner
+          }
+        >
+          <span>{notice.text}</span>
+          {notice.resume && (
+            <button
+              type="button"
+              className={styles.bannerAction}
+              disabled={busy}
+              onClick={() =>
+                runBulk(notice.resume!.published, notice.resume!.cursor)
+              }
+            >
+              Continue
+            </button>
+          )}
+        </div>
+      )}
 
       {productsError && (
         <div className={styles.errorBanner}>{productsError}</div>
       )}
 
-      {!productsError && products.length === 0 && (
+      {!productsError && products.length === 0 && !listLoading && (
         <div className={styles.emptyState}>
-          No products found in this store yet. Add products in Shopify, then
-          refresh this page.
+          {selectedCollection
+            ? "This collection has no products."
+            : "No products found in this store yet. Add products in Shopify, then refresh this page."}
         </div>
       )}
 
       {products.length > 0 && (
-        <div className={styles.productList}>
+        <div
+          className={`${styles.productList} ${
+            listLoading && loadModeRef.current === "replace"
+              ? styles.productListLoading
+              : ""
+          }`}
+        >
           {products.map((product) => (
-            <ProductRow key={product.id} product={product} />
+            <ProductRow
+              key={`${viewVersion}-${product.id}`}
+              product={product}
+              onToggled={handleToggled}
+            />
           ))}
         </div>
       )}
@@ -737,16 +1057,16 @@ export function ScreenC({
         <button
           type="button"
           className={styles.loadMoreButton}
-          disabled={loadMoreFetcher.state !== "idle"}
-          onClick={loadMore}
+          disabled={busy}
+          onClick={() => loadView(collectionId, pageInfo.endCursor)}
         >
-          {loadMoreFetcher.state !== "idle" ? "Loading…" : "Load more products"}
+          {listLoading && loadModeRef.current === "append"
+            ? "Loading…"
+            : "Load more products"}
         </button>
       )}
 
-      {loadMoreFetcher.data?.error && (
-        <div className={styles.errorBanner}>{loadMoreFetcher.data.error}</div>
-      )}
+      {listError && <div className={styles.errorBanner}>{listError}</div>}
     </div>
   );
 }
