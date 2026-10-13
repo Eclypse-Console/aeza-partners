@@ -653,6 +653,9 @@ type ToastMessage = { id: number; kind: "success" | "error"; text: string };
 // Only products whose selection differs from their saved state are in here.
 type PendingChanges = Record<string, boolean>;
 
+const AEZA_SITE_URL = "https://aeza.in";
+const AEZA_SITE_LABEL = "aeza.in";
+
 function plural(count: number, word: string) {
   return `${count.toLocaleString()} ${word}${count === 1 ? "" : "s"}`;
 }
@@ -688,6 +691,59 @@ function Toast({
           type="button"
           className={styles.toastClose}
           aria-label="Dismiss notification"
+          onClick={onDismiss}
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Shown after products are published, so the brand knows what happens next:
+// their products aren't on the marketplace the instant they hit Save.
+function GoLiveNotice({
+  count,
+  onDismiss,
+}: {
+  count: number;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className={styles.goLiveNotice} role="status">
+      <span className={styles.goLiveIcon} aria-hidden="true">
+        <svg viewBox="0 0 20 20" width="18" height="18">
+          <path
+            d="M10 2.5l1.9 4.3 4.6.4-3.5 3 1 4.6L10 12.4l-4 2.4 1-4.6-3.5-3 4.6-.4z"
+            fill="currentColor"
+          />
+        </svg>
+      </span>
+      <div className={styles.goLiveText}>
+        <p className={styles.goLiveTitle}>
+          {count === 1
+            ? "Your product is on its way to "
+            : `${count.toLocaleString()} products are on their way to `}
+          {AEZA_SITE_LABEL}
+        </p>
+        <p className={styles.goLiveBody}>
+          {count === 1 ? "It" : "They"}&apos;ll be live on the Aeza marketplace
+          soon. There&apos;s nothing else you need to do.
+        </p>
+      </div>
+      <div className={styles.goLiveActions}>
+        <a
+          href={AEZA_SITE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={styles.goLiveLink}
+        >
+          Visit {AEZA_SITE_LABEL}
+        </a>
+        <button
+          type="button"
+          className={styles.toastClose}
+          aria-label="Dismiss"
           onClick={onDismiss}
         >
           ×
@@ -869,6 +925,9 @@ export function ScreenC({
   const [pending, setPending] = useState<PendingChanges>({});
   const [toast, setToast] = useState<ToastMessage | null>(null);
   const [bulkResume, setBulkResume] = useState<BulkResume | null>(null);
+  // How many products the latest save / bulk action just published, for the
+  // "going live on aeza.in" banner. Null once dismissed or nothing published.
+  const [goLiveCount, setGoLiveCount] = useState<number | null>(null);
   const [confirming, setConfirming] = useState<"publish" | "unpublish" | null>(
     null,
   );
@@ -1051,6 +1110,10 @@ export function ScreenC({
     let text = parts.length
       ? `Saved. ${parts.join(", ")}.`
       : "Saved. Everything was already up to date.";
+    if (data.published > 0) {
+      text += ` ${data.published === 1 ? "It" : "They"}'ll be live on ${AEZA_SITE_LABEL} soon.`;
+      setGoLiveCount(data.published);
+    }
     if (data.missing.length > 0) {
       text += ` ${plural(data.missing.length, "product")} no longer exist in Shopify and ${data.missing.length === 1 ? "was" : "were"} skipped.`;
     }
@@ -1071,12 +1134,18 @@ export function ScreenC({
     }
 
     const verb = data.published ? "published to Aeza" : "unpublished";
+    const goingLive = data.published && data.affected > 0;
     showToast(
       "success",
       data.affected === 0
         ? "Nothing to change. Everything was already up to date."
-        : `${plural(data.affected, "product")} ${verb}.`,
+        : `${plural(data.affected, "product")} ${verb}.${
+            goingLive
+              ? ` ${data.affected === 1 ? "It" : "They"}'ll be live on ${AEZA_SITE_LABEL} soon.`
+              : ""
+          }`,
     );
+    if (goingLive) setGoLiveCount(data.affected);
     setBulkResume(
       data.truncated && data.nextCursor
         ? { cursor: data.nextCursor, published: data.published }
@@ -1166,7 +1235,8 @@ export function ScreenC({
         <p className={styles.body}>
           {brandName ? `${brandName}: ` : ""}select the products you want on
           Aeza&apos;s marketplace, then save. Nothing changes until you hit
-          Save, and you can update your selection anytime.
+          Save, and published products go live on {AEZA_SITE_LABEL} soon
+          after. You can update your selection anytime.
         </p>
       </div>
 
@@ -1266,6 +1336,13 @@ export function ScreenC({
             </div>
           </div>
         </>
+      )}
+
+      {goLiveCount !== null && (
+        <GoLiveNotice
+          count={goLiveCount}
+          onDismiss={() => setGoLiveCount(null)}
+        />
       )}
 
       {bulkRunning && (
