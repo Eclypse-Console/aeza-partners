@@ -16,6 +16,8 @@ export type ShopifyProduct = {
   title: string;
   status: string;
   imageUrl: string | null;
+  /** Small CDN-resized version of the image, for the dashboard grid. */
+  thumbnailUrl: string | null;
 };
 
 export type DashboardProduct = ShopifyProduct & {
@@ -48,6 +50,13 @@ const COLLECTION_GID_PATTERN = /^gid:\/\/shopify\/Collection\/\d+$/;
 // request inside serverless time limits and Shopify's API cost budget; the
 // caller is told when a catalog is bigger so the brand can run it again.
 export const MAX_BULK_PRODUCTS = 2000;
+
+// Products per dashboard page. Small pages keep each Shopify call cheap and
+// the first paint fast; more load as the brand scrolls.
+export const PRODUCTS_PAGE_SIZE = 20;
+
+// Upper bound on how many individually selected products one Save can carry.
+export const MAX_SAVE_CHANGES = 1000;
 
 export function isValidProductGid(value: string): boolean {
   return PRODUCT_GID_PATTERN.test(value);
@@ -109,7 +118,7 @@ type ProductNode = {
   id: string;
   title: string;
   status: string;
-  featuredImage: { url: string } | null;
+  featuredImage: { url: string; thumbnailUrl: string } | null;
 };
 
 type ProductConnection = {
@@ -127,12 +136,13 @@ const EMPTY_CONNECTION: ProductConnection = {
  * the already-authenticated admin client (so results are always scoped to
  * whichever shop's session made the request, there is no shop parameter to
  * accidentally trust from a client). Pass `collectionId` to page through a
- * single collection instead of the whole catalog.
+ * single collection instead of the whole catalog. The whole-catalog view is
+ * newest first, so products added in Shopify show up at the top after a sync.
  */
 export async function fetchShopifyProducts(
   admin: AdminGraphqlClient,
   {
-    first = 25,
+    first = PRODUCTS_PAGE_SIZE,
     after,
     collectionId,
   }: { first?: number; after?: string | null; collectionId?: string | null } = {},
@@ -154,6 +164,7 @@ export async function fetchShopifyProducts(
               status
               featuredImage {
                 url
+                thumbnailUrl: url(transform: { maxWidth: 480, maxHeight: 480 })
               }
             }
             pageInfo {
@@ -171,13 +182,19 @@ export async function fetchShopifyProducts(
       admin,
       `#graphql
       query FetchProducts($first: Int!, $after: String) {
-        products(first: $first, after: $after) {
+        products(
+          first: $first
+          after: $after
+          sortKey: CREATED_AT
+          reverse: true
+        ) {
           nodes {
             id
             title
             status
             featuredImage {
               url
+              thumbnailUrl: url(transform: { maxWidth: 480, maxHeight: 480 })
             }
           }
           pageInfo {
@@ -197,48 +214,64 @@ export async function fetchShopifyProducts(
       title: node.title,
       status: node.status,
       imageUrl: node.featuredImage?.url ?? null,
+      thumbnailUrl: node.featuredImage?.thumbnailUrl ?? null,
     })),
     pageInfo: connection.pageInfo,
   };
 }
 
+// Shopify's `nodes` query accepts at most 250 ids per call.
+const NODES_PAGE_SIZE = 250;
+
 /**
- * Fetches a single product by id, using the authenticated admin client.
- * Used when toggling publish state so the title/image we store come from
- * Shopify itself, never from whatever the browser sent.
+ * Fetches specific products by id, using the authenticated admin client.
+ * Used when saving a brand's selection so the title/image we store come
+ * from Shopify itself, never from whatever the browser sent. Ids that don't
+ * resolve to a product on this shop (deleted, or from another store) are
+ * simply absent from the result.
  */
-export async function fetchShopifyProductById(
+export async function fetchShopifyProductsByIds(
   admin: AdminGraphqlClient,
-  productId: string,
-): Promise<{ id: string; title: string; imageUrl: string | null } | null> {
-  const data = await runAdminQuery<{
-    product: {
-      id: string;
-      title: string;
-      featuredImage: { url: string } | null;
-    } | null;
-  }>(
-    admin,
-    `#graphql
-    query FetchProduct($id: ID!) {
-      product(id: $id) {
-        id
-        title
-        featuredImage {
-          url
+  productIds: string[],
+): Promise<ShopifyProduct[]> {
+  const products: ShopifyProduct[] = [];
+
+  for (let start = 0; start < productIds.length; start += NODES_PAGE_SIZE) {
+    const ids = productIds.slice(start, start + NODES_PAGE_SIZE);
+    const data = await runAdminQuery<{
+      nodes: Array<Partial<ProductNode> | null>;
+    }>(
+      admin,
+      `#graphql
+      query FetchProductsByIds($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on Product {
+            id
+            title
+            status
+            featuredImage {
+              url
+              thumbnailUrl: url(transform: { maxWidth: 480, maxHeight: 480 })
+            }
+          }
         }
-      }
-    }`,
-    { id: productId },
-  );
+      }`,
+      { ids },
+    );
 
-  if (!data.product) return null;
+    for (const node of data.nodes) {
+      if (!node?.id || !node.title) continue;
+      products.push({
+        id: node.id,
+        title: node.title,
+        status: node.status ?? "ACTIVE",
+        imageUrl: node.featuredImage?.url ?? null,
+        thumbnailUrl: node.featuredImage?.thumbnailUrl ?? null,
+      });
+    }
+  }
 
-  return {
-    id: data.product.id,
-    title: data.product.title,
-    imageUrl: data.product.featuredImage?.url ?? null,
-  };
+  return products;
 }
 
 /**
@@ -373,43 +406,100 @@ export async function mergeWithPublishState(
 }
 
 /**
- * Records (or clears) a brand's decision to publish a product to Aeza.
- * Always scoped by `shop` from the authenticated session, callers must
- * never pass a shop value sourced from client input.
+ * Records a brand's saved selection: each product is set to the publish state
+ * the brand chose for it, all in one transaction. Always scoped by `shop`
+ * from the authenticated session, callers must never pass a shop value
+ * sourced from client input, and `products` must come from Shopify (see
+ * fetchShopifyProductsByIds). Products already in the requested state are
+ * left untouched, and unpublishing never creates rows (a product with no row
+ * is already "not published"). Returns how many products actually changed
+ * each way, plus the shop's new published total for the dashboard header.
  */
-export async function setProductPublishState({
+export async function saveProductSelections({
   shop,
-  productId,
-  title,
-  imageUrl,
-  published,
+  changes,
 }: {
   shop: string;
-  productId: string;
-  title: string;
-  imageUrl: string | null;
-  published: boolean;
-}) {
-  return prisma.publishedProduct.upsert({
-    where: { shop_productId: { shop, productId } },
-    update: {
-      title,
-      imageUrl,
-      published,
-      syncStatus: "recorded",
-      syncError: null,
-      lastSyncedAt: new Date(),
-    },
-    create: {
-      shop,
-      productId,
-      title,
-      imageUrl,
-      published,
-      syncStatus: "recorded",
-      lastSyncedAt: new Date(),
-    },
+  changes: Array<{ product: ShopifyProduct; published: boolean }>;
+}): Promise<{ published: number; unpublished: number; publishedTotal: number }> {
+  const ids = changes.map(({ product }) => product.id);
+  const existing = ids.length
+    ? await prisma.publishedProduct.findMany({
+        where: { shop, productId: { in: ids } },
+        select: { productId: true, published: true },
+      })
+    : [];
+  const existingById = new Map(
+    existing.map((row) => [row.productId, row.published]),
+  );
+
+  const toPublish: string[] = [];
+  const toUnpublish: string[] = [];
+  const toCreate: ShopifyProduct[] = [];
+
+  for (const { product, published } of changes) {
+    const current = existingById.get(product.id);
+    if (current === undefined) {
+      if (published) toCreate.push(product);
+    } else if (current !== published) {
+      (published ? toPublish : toUnpublish).push(product.id);
+    }
+  }
+
+  const now = new Date();
+  const recorded = {
+    syncStatus: "recorded",
+    syncError: null,
+    lastSyncedAt: now,
+  };
+  const operations: Prisma.PrismaPromise<Prisma.BatchPayload>[] = [];
+
+  if (toPublish.length > 0) {
+    operations.push(
+      prisma.publishedProduct.updateMany({
+        where: { shop, productId: { in: toPublish } },
+        data: { published: true, ...recorded },
+      }),
+    );
+  }
+  if (toUnpublish.length > 0) {
+    operations.push(
+      prisma.publishedProduct.updateMany({
+        where: { shop, productId: { in: toUnpublish } },
+        data: { published: false, ...recorded },
+      }),
+    );
+  }
+  if (toCreate.length > 0) {
+    operations.push(
+      prisma.publishedProduct.createMany({
+        data: toCreate.map((product) => ({
+          shop,
+          productId: product.id,
+          title: product.title,
+          imageUrl: product.imageUrl,
+          published: true,
+          syncStatus: "recorded",
+          lastSyncedAt: now,
+        })),
+        skipDuplicates: true,
+      }),
+    );
+  }
+
+  if (operations.length > 0) {
+    await prisma.$transaction(operations);
+  }
+
+  const publishedTotal = await prisma.publishedProduct.count({
+    where: { shop, published: true },
   });
+
+  return {
+    published: toPublish.length + toCreate.length,
+    unpublished: toUnpublish.length,
+    publishedTotal,
+  };
 }
 
 // Applies one page of products to the publish table in a single transaction:

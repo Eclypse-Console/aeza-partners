@@ -59,7 +59,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // load, try again" state instead of a hard error boundary.
   try {
     const [{ products, pageInfo }, counts, collections] = await Promise.all([
-      fetchShopifyProducts(admin, { first: 25 }),
+      fetchShopifyProducts(admin),
       getProductCounts(admin, session.shop),
       // Collections only power the filter dropdown, so a failure here
       // should never block the dashboard, it just renders without it.
@@ -202,7 +202,7 @@ export default function Index() {
   );
 }
 
-// The dashboard's toggles, bulk actions and pagination post/load against the
+// The dashboard's save, bulk actions and pagination post/load against the
 // /app/products/* resource routes and keep their own state. By default React
 // Router would re-run this page's loader (several Shopify calls) after every
 // one of those actions, skip that, but still revalidate for this route's own

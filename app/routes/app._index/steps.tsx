@@ -1,5 +1,8 @@
 import {
+  memo,
+  useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ComponentType,
@@ -604,6 +607,7 @@ export type DashboardProduct = {
   title: string;
   status: string;
   imageUrl: string | null;
+  thumbnailUrl?: string | null;
   published: boolean;
   syncStatus: string;
 };
@@ -619,8 +623,14 @@ type ListResponse = {
   error: string | null;
 };
 
-type ToggleResponse =
-  | { product: { id: string; published: boolean; syncStatus: string } }
+type SaveResponse =
+  | {
+      published: number;
+      unpublished: number;
+      publishedTotal: number;
+      saved: Array<{ id: string; published: boolean }>;
+      missing: string[];
+    }
   | { error: string };
 
 type BulkResponse =
@@ -633,33 +643,82 @@ type BulkResponse =
     }
   | { error: string };
 
-type Notice = {
-  kind: "success" | "error";
-  text: string;
-  // Set when a bulk run stopped at its safety limit: the cursor to continue
-  // from, and which direction (publish / unpublish) it was running.
-  resume?: { cursor: string; published: boolean };
-};
+// Set when a bulk run stopped at its safety limit: the cursor to continue
+// from, and which direction (publish / unpublish) it was running.
+type BulkResume = { cursor: string; published: boolean };
+
+type ToastMessage = { id: number; kind: "success" | "error"; text: string };
+
+// Product id -> the publish state the brand has selected but not yet saved.
+// Only products whose selection differs from their saved state are in here.
+type PendingChanges = Record<string, boolean>;
 
 function plural(count: number, word: string) {
   return `${count.toLocaleString()} ${word}${count === 1 ? "" : "s"}`;
 }
 
-function ProductStatusBadge({
-  published,
-  syncStatus,
+function Toast({
+  toast,
+  onDismiss,
 }: {
-  published: boolean;
-  syncStatus: string;
+  toast: ToastMessage;
+  onDismiss: () => void;
 }) {
-  if (!published) {
+  useEffect(() => {
+    const timer = setTimeout(onDismiss, toast.kind === "error" ? 7000 : 4000);
+    return () => clearTimeout(timer);
+    // Restart the timer only when a new toast replaces this one.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toast.id]);
+
+  const isError = toast.kind === "error";
+
+  return (
+    <div className={styles.toastViewport}>
+      <div
+        key={toast.id}
+        role={isError ? "alert" : "status"}
+        className={`${styles.toast} ${isError ? styles.toastError : styles.toastSuccess}`}
+      >
+        <span className={styles.toastIcon} aria-hidden="true">
+          {isError ? "!" : "✓"}
+        </span>
+        <span className={styles.toastText}>{toast.text}</span>
+        <button
+          type="button"
+          className={styles.toastClose}
+          aria-label="Dismiss notification"
+          onClick={onDismiss}
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ProductStatusBadge({
+  product,
+  pendingState,
+}: {
+  product: DashboardProduct;
+  pendingState: boolean | undefined;
+}) {
+  if (pendingState !== undefined) {
+    return (
+      <span className={`${styles.statusBadge} ${styles.statusBadgePending}`}>
+        {pendingState ? "Will publish" : "Will unpublish"}
+      </span>
+    );
+  }
+  if (!product.published) {
     return (
       <span className={`${styles.statusBadge} ${styles.statusBadgeIdle}`}>
         Not published
       </span>
     );
   }
-  if (syncStatus === "error") {
+  if (product.syncStatus === "error") {
     return (
       <span className={`${styles.statusBadge} ${styles.statusBadgeError}`}>
         Needs attention
@@ -668,76 +727,122 @@ function ProductStatusBadge({
   }
   return (
     <span className={`${styles.statusBadge} ${styles.statusBadgePublished}`}>
-      Published to Aeza
+      On Aeza
     </span>
   );
 }
 
-function ProductRow({
+// Memoised: selecting a card only re-renders that card, since every prop
+// is either a primitive or stable (the product object and onToggle keep
+// their identity until the product itself changes).
+const ProductCard = memo(function ProductCard({
   product,
-  onToggled,
+  pendingState,
+  disabled,
+  onToggle,
 }: {
   product: DashboardProduct;
-  onToggled: (productId: string, published: boolean) => void;
+  pendingState: boolean | undefined;
+  disabled: boolean;
+  onToggle: (productId: string, savedPublished: boolean) => void;
 }) {
-  const fetcher = useFetcher<ToggleResponse>();
-  const pending = fetcher.state !== "idle";
+  const selected = pendingState ?? product.published;
+  const isDraft = product.status !== "ACTIVE";
 
-  // Optimistic: while a toggle is in flight, show the state being sent
-  // rather than waiting for the round trip. Once it settles, the parent's
-  // product list (updated through onToggled) is the source of truth.
-  const published = fetcher.formData
-    ? fetcher.formData.get("published") === "true"
-    : product.published;
-
-  const error =
-    fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
-
-  useEffect(() => {
-    if (fetcher.data && "product" in fetcher.data) {
-      onToggled(fetcher.data.product.id, fetcher.data.product.published);
-    }
-    // Only react to a freshly arrived response, not to parent re-renders.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetcher.data]);
-
-  const toggle = () => {
-    fetcher.submit(
-      { productId: product.id, published: String(!published) },
-      { method: "POST", action: "/app/products/toggle" },
-    );
-  };
-
+  // A real checkbox inside a label: the whole card is the click target, and
+  // keyboard / screen reader users get native checkbox behaviour. Selecting
+  // only changes local state, nothing is sent until the brand hits Save.
   return (
-    <div className={styles.productRow}>
-      <div className={styles.productRowMedia}>
-        {product.imageUrl ? (
-          <img src={product.imageUrl} alt="" className={styles.productThumb} />
+    <label
+      className={[
+        styles.productCard,
+        selected ? styles.productCardSelected : "",
+        pendingState !== undefined ? styles.productCardChanged : "",
+        disabled ? styles.productCardDisabled : "",
+      ].join(" ")}
+    >
+      <input
+        type="checkbox"
+        className={styles.visuallyHidden}
+        checked={selected}
+        disabled={disabled}
+        onChange={() => onToggle(product.id, product.published)}
+      />
+
+      <div className={styles.productCardMedia}>
+        {product.thumbnailUrl || product.imageUrl ? (
+          <img
+            src={product.thumbnailUrl || product.imageUrl!}
+            alt=""
+            loading="lazy"
+            decoding="async"
+            width={480}
+            height={480}
+            className={styles.productCardImage}
+          />
         ) : (
-          <div className={styles.productThumbPlaceholder} aria-hidden="true" />
+          <div className={styles.productCardPlaceholder} aria-hidden="true">
+            No image
+          </div>
+        )}
+        <span className={styles.productCardCheck} aria-hidden="true">
+          <svg viewBox="0 0 16 16" width="14" height="14">
+            <path
+              d="M3.5 8.5l3 3 6-7"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+        {isDraft && (
+          <span className={styles.productCardDraft}>
+            {product.status.charAt(0) + product.status.slice(1).toLowerCase()}
+          </span>
         )}
       </div>
 
-      <div className={styles.productRowInfo}>
-        <p className={styles.productTitle}>{product.title}</p>
-        <ProductStatusBadge
-          published={published}
-          syncStatus={product.syncStatus}
-        />
-        {error && <p className={styles.productRowError}>{error}</p>}
+      <div className={styles.productCardBody}>
+        <p className={styles.productCardTitle} title={product.title}>
+          {product.title}
+        </p>
+        <ProductStatusBadge product={product} pendingState={pendingState} />
       </div>
+    </label>
+  );
+});
 
-      <button
-        type="button"
-        role="switch"
-        aria-checked={published}
-        aria-label={`Publish ${product.title} to Aeza`}
-        className={`${styles.toggleSwitch} ${published ? styles.toggleSwitchOn : ""}`}
-        disabled={pending}
-        onClick={toggle}
-      >
-        <span className={styles.toggleSwitchKnob} />
-      </button>
+// Record `selected` as the wanted state for a product, or drop the pending
+// entry when that's simply its saved state again. Returns the same object
+// when nothing changes, so React can skip the re-render.
+function withSelection(
+  previous: PendingChanges,
+  productId: string,
+  savedPublished: boolean,
+  selected: boolean,
+): PendingChanges {
+  if (selected === savedPublished) {
+    if (!(productId in previous)) return previous;
+    const next = { ...previous };
+    delete next[productId];
+    return next;
+  }
+  if (previous[productId] === selected) return previous;
+  return { ...previous, [productId]: selected };
+}
+
+function formatSyncTime(date: Date) {
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function ProductCardSkeleton() {
+  return (
+    <div className={styles.productCardSkeleton} aria-hidden="true">
+      <div className={styles.skeletonMedia} />
+      <div className={styles.skeletonLine} />
+      <div className={styles.skeletonLineShort} />
     </div>
   );
 }
@@ -761,21 +866,50 @@ export function ScreenC({
   const [pageInfo, setPageInfo] = useState(initialPageInfo);
   const [counts, setCounts] = useState(initialCounts);
   const [collectionId, setCollectionId] = useState("");
-  const [viewVersion, setViewVersion] = useState(0);
-  const [notice, setNotice] = useState<Notice | null>(null);
+  const [pending, setPending] = useState<PendingChanges>({});
+  const [toast, setToast] = useState<ToastMessage | null>(null);
+  const [bulkResume, setBulkResume] = useState<BulkResume | null>(null);
   const [confirming, setConfirming] = useState<"publish" | "unpublish" | null>(
     null,
   );
 
   const listFetcher = useFetcher<ListResponse>();
   const bulkFetcher = useFetcher<BulkResponse>();
+  const saveFetcher = useFetcher<SaveResponse>();
   // Whether the in-flight list request replaces the list (first page of a
   // view) or extends it ("Load more").
   const loadModeRef = useRef<"replace" | "append">("replace");
+  // Set while a "Sync" reload is in flight, so its result can be announced.
+  const syncingRef = useRef(false);
+  const toastIdRef = useRef(0);
+  const loadMoreRef = useRef<HTMLButtonElement>(null);
+  // Client-only (set after mount) so server and browser render the same.
+  const [lastSynced, setLastSynced] = useState<Date | null>(null);
 
   const listLoading = listFetcher.state !== "idle";
   const bulkRunning = bulkFetcher.state !== "idle";
-  const busy = listLoading || bulkRunning;
+  const saving = saveFetcher.state !== "idle";
+  const busy = listLoading || bulkRunning || saving;
+
+  const { pendingEntries, toPublishCount } = useMemo(() => {
+    const entries = Object.entries(pending);
+    return {
+      pendingEntries: entries,
+      toPublishCount: entries.filter(([, value]) => value).length,
+    };
+  }, [pending]);
+  const pendingCount = pendingEntries.length;
+  const toUnpublishCount = pendingCount - toPublishCount;
+  const hasPending = pendingCount > 0;
+
+  const selectedCount = useMemo(
+    () =>
+      products.filter((product) => pending[product.id] ?? product.published)
+        .length,
+    [products, pending],
+  );
+  const syncing = listLoading && loadModeRef.current === "replace";
+  const appending = listLoading && loadModeRef.current === "append";
 
   const selectedCollection = collections.find(
     (collection) => collection.id === collectionId,
@@ -792,6 +926,11 @@ export function ScreenC({
     })),
   ];
 
+  const showToast = (kind: ToastMessage["kind"], text: string) => {
+    toastIdRef.current += 1;
+    setToast({ id: toastIdRef.current, kind, text });
+  };
+
   const loadView = (collection: string, after?: string | null) => {
     loadModeRef.current = after ? "append" : "replace";
     const params = new URLSearchParams();
@@ -800,11 +939,57 @@ export function ScreenC({
     listFetcher.load(`/app/products/list?${params.toString()}`);
   };
 
+  useEffect(() => {
+    setLastSynced(new Date());
+  }, []);
+
+  // Load the next page automatically as the brand nears the end of the grid.
+  // The "Load more" button stays as a visible, clickable fallback.
+  const canLoadMore = pageInfo.hasNextPage && !busy;
+  useEffect(() => {
+    const target = loadMoreRef.current;
+    if (!target || !canLoadMore || typeof IntersectionObserver === "undefined") {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          observer.disconnect();
+          loadView(collectionId, pageInfo.endCursor);
+        }
+      },
+      { rootMargin: "400px 0px" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+    // loadView only reads the values listed here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canLoadMore, collectionId, pageInfo.endCursor]);
+
+  // Warn before leaving the page with unsaved selections.
+  useEffect(() => {
+    if (!hasPending) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [hasPending]);
+
   // Apply a freshly loaded page: replace the list for a new view, or append
-  // for "Load more" (skipping any product already shown).
+  // for "Load more" (skipping any product already shown). Pending selections
+  // are kept across views, so a brand can pick products from several
+  // collections and save them together.
   useEffect(() => {
     const data = listFetcher.data;
-    if (!data || data.error) return;
+    if (!data) return;
+    const wasSync = syncingRef.current;
+    syncingRef.current = false;
+    if (data.error) {
+      showToast("error", data.error);
+      return;
+    }
 
     if (loadModeRef.current === "append") {
       setProducts((previous) => {
@@ -816,73 +1001,152 @@ export function ScreenC({
       });
     } else {
       setProducts(data.products);
-      setViewVersion((version) => version + 1);
     }
     setPageInfo(data.pageInfo);
     if (data.counts) setCounts(data.counts);
+    if (loadModeRef.current === "replace") setLastSynced(new Date());
+    if (wasSync) showToast("success", "Products synced with Shopify.");
     // Only react to a freshly arrived response.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listFetcher.data]);
 
+  // A save finished: apply what the server recorded, clear those pending
+  // selections and report the result. On failure the selections stay, so
+  // the brand can simply hit Save again.
+  useEffect(() => {
+    const data = saveFetcher.data;
+    if (!data) return;
+
+    if ("error" in data) {
+      showToast("error", data.error);
+      return;
+    }
+
+    const savedState = new Map(data.saved.map((item) => [item.id, item.published]));
+    const settled = new Set([...savedState.keys(), ...data.missing]);
+
+    setProducts((previous) =>
+      previous.map((product) => {
+        const published = savedState.get(product.id);
+        if (published === undefined || published === product.published) {
+          return product;
+        }
+        return { ...product, published, syncStatus: "recorded" };
+      }),
+    );
+    setPending((previous) =>
+      Object.fromEntries(
+        Object.entries(previous).filter(([id]) => !settled.has(id)),
+      ),
+    );
+    setCounts((previous) => ({ ...previous, published: data.publishedTotal }));
+
+    const parts: string[] = [];
+    if (data.published > 0) {
+      parts.push(`${plural(data.published, "product")} published to Aeza`);
+    }
+    if (data.unpublished > 0) {
+      parts.push(`${plural(data.unpublished, "product")} unpublished`);
+    }
+    let text = parts.length
+      ? `Saved. ${parts.join(", ")}.`
+      : "Saved. Everything was already up to date.";
+    if (data.missing.length > 0) {
+      text += ` ${plural(data.missing.length, "product")} no longer exist in Shopify and ${data.missing.length === 1 ? "was" : "were"} skipped.`;
+    }
+    showToast("success", text);
+    // Only react to a freshly arrived response.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saveFetcher.data]);
+
   // A bulk action finished: report it, then reload the current view so every
-  // row and the counts reflect what actually changed on the server.
+  // card and the counts reflect what actually changed on the server.
   useEffect(() => {
     const data = bulkFetcher.data;
     if (!data) return;
 
     if ("error" in data) {
-      setNotice({ kind: "error", text: data.error });
+      showToast("error", data.error);
       return;
     }
 
     const verb = data.published ? "published to Aeza" : "unpublished";
-    const summary =
+    showToast(
+      "success",
       data.affected === 0
         ? "Nothing to change. Everything was already up to date."
-        : `${plural(data.affected, "product")} ${verb}.`;
-
-    setNotice({
-      kind: "success",
-      text: data.truncated
-        ? `${summary} Stopped after ${data.limit.toLocaleString()} products. Continue to process the rest.`
-        : summary,
-      resume:
-        data.truncated && data.nextCursor
-          ? { cursor: data.nextCursor, published: data.published }
-          : undefined,
-    });
+        : `${plural(data.affected, "product")} ${verb}.`,
+    );
+    setBulkResume(
+      data.truncated && data.nextCursor
+        ? { cursor: data.nextCursor, published: data.published }
+        : null,
+    );
     loadView(collectionId);
     // Only react to a freshly arrived response.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bulkFetcher.data]);
 
-  const handleToggled = (productId: string, published: boolean) => {
-    const current = products.find((product) => product.id === productId);
-    if (!current || current.published === published) return;
+  // Stable identity so memoised cards don't re-render when the parent does.
+  const toggleProduct = useCallback(
+    (productId: string, savedPublished: boolean) => {
+      setPending((previous) =>
+        withSelection(
+          previous,
+          productId,
+          savedPublished,
+          !(previous[productId] ?? savedPublished),
+        ),
+      );
+    },
+    [],
+  );
 
-    setProducts((previous) =>
-      previous.map((product) =>
-        product.id === productId
-          ? { ...product, published, syncStatus: "recorded" }
-          : product,
+  const selectAll = (selected: boolean) => {
+    setPending((previous) =>
+      products.reduce(
+        (next, product) =>
+          withSelection(next, product.id, product.published, selected),
+        previous,
       ),
     );
-    setCounts((previous) => ({
-      ...previous,
-      published: Math.max(0, previous.published + (published ? 1 : -1)),
-    }));
+  };
+
+  const sync = () => {
+    syncingRef.current = true;
+    setBulkResume(null);
+    loadView(collectionId);
+  };
+
+  const save = () => {
+    saveFetcher.submit(
+      {
+        changes: JSON.stringify(
+          pendingEntries.map(([productId, published]) => ({
+            productId,
+            published,
+          })),
+        ),
+      },
+      { method: "POST", action: "/app/products/save" },
+    );
+  };
+
+  const discard = () => {
+    setPending({});
+    showToast("success", "Changes discarded.");
   };
 
   const changeCollection = (nextCollectionId: string) => {
     setCollectionId(nextCollectionId);
-    setNotice(null);
     setConfirming(null);
+    setBulkResume(null);
     loadView(nextCollectionId);
   };
 
   const runBulk = (published: boolean, cursor?: string) => {
     setConfirming(null);
-    setNotice(null);
+    setBulkResume(null);
     bulkFetcher.submit(
       {
         published: String(published),
@@ -893,17 +1157,16 @@ export function ScreenC({
     );
   };
 
-  const listError = listFetcher.data?.error ?? null;
+  const showSkeleton = syncing && products.length === 0;
 
   return (
     <div className={styles.dashboardWrapper}>
       <div className={styles.dashboardHeader}>
         <h1 className={styles.headline}>You&apos;re connected to Aeza</h1>
         <p className={styles.body}>
-          {brandName ? `${brandName}: ` : ""}choose which products to
-          publish to Aeza&apos;s marketplace. Publish everything in one click,
-          a whole collection at a time, or pick products one by one. You can
-          change this anytime.
+          {brandName ? `${brandName}: ` : ""}select the products you want on
+          Aeza&apos;s marketplace, then save. Nothing changes until you hit
+          Save, and you can update your selection anytime.
         </p>
       </div>
 
@@ -950,7 +1213,7 @@ export function ScreenC({
                 <>
                   <span className={styles.bulkConfirmText}>
                     {confirming === "publish" ? "Publish" : "Unpublish"} every
-                    product {scopeLabel}?
+                    product {scopeLabel}? This applies right away.
                   </span>
                   <button
                     type="button"
@@ -973,7 +1236,12 @@ export function ScreenC({
                   <button
                     type="button"
                     className={styles.bulkButtonPrimary}
-                    disabled={busy}
+                    disabled={busy || hasPending}
+                    title={
+                      hasPending
+                        ? "Save or discard your selection first"
+                        : undefined
+                    }
                     onClick={() => setConfirming("publish")}
                   >
                     {selectedCollection ? "Publish collection" : "Publish all"}
@@ -981,7 +1249,12 @@ export function ScreenC({
                   <button
                     type="button"
                     className={styles.bulkButton}
-                    disabled={busy}
+                    disabled={busy || hasPending}
+                    title={
+                      hasPending
+                        ? "Save or discard your selection first"
+                        : undefined
+                    }
                     onClick={() => setConfirming("unpublish")}
                   >
                     {selectedCollection
@@ -1001,25 +1274,20 @@ export function ScreenC({
         </div>
       )}
 
-      {notice && (
-        <div
-          className={
-            notice.kind === "success" ? styles.successBanner : styles.errorBanner
-          }
-        >
-          <span>{notice.text}</span>
-          {notice.resume && (
-            <button
-              type="button"
-              className={styles.bannerAction}
-              disabled={busy}
-              onClick={() =>
-                runBulk(notice.resume!.published, notice.resume!.cursor)
-              }
-            >
-              Continue
-            </button>
-          )}
+      {bulkResume && !bulkRunning && (
+        <div className={styles.infoBanner}>
+          <span>
+            Large catalog: stopped partway through. Continue to process the
+            rest.
+          </span>
+          <button
+            type="button"
+            className={styles.bannerAction}
+            disabled={busy}
+            onClick={() => runBulk(bulkResume.published, bulkResume.cursor)}
+          >
+            Continue
+          </button>
         </div>
       )}
 
@@ -1035,38 +1303,158 @@ export function ScreenC({
         </div>
       )}
 
+      {!productsError && (
+        <div className={styles.gridHeader}>
+          <p className={styles.gridHeaderText}>
+            {products.length > 0
+              ? `${selectedCount.toLocaleString()} of ${plural(products.length, "product")} selected`
+              : null}
+          </p>
+          <div className={styles.gridHeaderActions}>
+            {products.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  className={styles.textButton}
+                  disabled={busy || selectedCount === products.length}
+                  onClick={() => selectAll(true)}
+                >
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  className={styles.textButton}
+                  disabled={busy || selectedCount === 0}
+                  onClick={() => selectAll(false)}
+                >
+                  Clear all
+                </button>
+                <span className={styles.gridHeaderDivider} aria-hidden="true" />
+              </>
+            )}
+            <button
+              type="button"
+              className={styles.syncButton}
+              disabled={busy}
+              onClick={sync}
+              title={
+                lastSynced
+                  ? `Last synced at ${formatSyncTime(lastSynced)}`
+                  : undefined
+              }
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="14"
+                height="14"
+                aria-hidden="true"
+                className={syncing ? styles.syncIconSpinning : undefined}
+              >
+                <path
+                  d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              {syncing ? "Syncing…" : "Sync products"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showSkeleton && (
+        <div className={styles.productGrid}>
+          {Array.from({ length: 8 }, (_, index) => (
+            <ProductCardSkeleton key={index} />
+          ))}
+        </div>
+      )}
+
       {products.length > 0 && (
         <div
-          className={`${styles.productList} ${
-            listLoading && loadModeRef.current === "replace"
-              ? styles.productListLoading
-              : ""
-          }`}
+          className={`${styles.productGrid} ${syncing ? styles.productListLoading : ""}`}
         >
           {products.map((product) => (
-            <ProductRow
-              key={`${viewVersion}-${product.id}`}
+            <ProductCard
+              key={product.id}
               product={product}
-              onToggled={handleToggled}
+              pendingState={pending[product.id]}
+              disabled={saving || bulkRunning}
+              onToggle={toggleProduct}
             />
           ))}
+          {appending &&
+            Array.from({ length: 4 }, (_, index) => (
+              <ProductCardSkeleton key={`more-${index}`} />
+            ))}
         </div>
       )}
 
       {pageInfo.hasNextPage && (
         <button
+          ref={loadMoreRef}
           type="button"
           className={styles.loadMoreButton}
           disabled={busy}
           onClick={() => loadView(collectionId, pageInfo.endCursor)}
         >
-          {listLoading && loadModeRef.current === "append"
-            ? "Loading…"
-            : "Load more products"}
+          {appending ? "Loading…" : "Load more products"}
         </button>
       )}
 
-      {listError && <div className={styles.errorBanner}>{listError}</div>}
+      {hasPending && (
+        <div
+          className={styles.saveBar}
+          role="region"
+          aria-label="Unsaved changes"
+        >
+          <div className={styles.saveBarText}>
+            <span className={styles.saveBarTitle}>
+              {plural(pendingCount, "unsaved change")}
+            </span>
+            <span className={styles.saveBarDetail}>
+              {[
+                toPublishCount > 0 ? `${toPublishCount} to publish` : null,
+                toUnpublishCount > 0
+                  ? `${toUnpublishCount} to unpublish`
+                  : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </span>
+          </div>
+          <div className={styles.saveBarActions}>
+            <button
+              type="button"
+              className={styles.bulkButton}
+              disabled={saving}
+              onClick={discard}
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              className={styles.bulkButtonPrimary}
+              disabled={saving}
+              onClick={save}
+            >
+              {saving ? (
+                <span className={styles.buttonBusy}>
+                  <span className={styles.spinner} aria-hidden="true" />
+                  Saving…
+                </span>
+              ) : (
+                "Save changes"
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {toast && <Toast toast={toast} onDismiss={() => setToast(null)} />}
     </div>
   );
 }

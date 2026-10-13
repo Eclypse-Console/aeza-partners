@@ -23,8 +23,8 @@ export const loader = async () => {
 type OnboardingScreen = "A" | "B" | "C";
 
 // Static sample catalog so the dashboard can be previewed without a store.
-// Toggles here will POST to /app/products/toggle and fail (no session) —
-// the preview is for layout only.
+// Selecting cards works locally; Save will POST to /app/products/save and
+// fail (no session), which also previews the error toast.
 const MOCK_PRODUCTS: DashboardProduct[] = [
   {
     id: "gid://shopify/Product/1",
