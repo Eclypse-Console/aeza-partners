@@ -10,9 +10,10 @@ import { isLiveOnAeza } from "./aeza-catalog.server";
 //   - another request for the same id is in flight -> 409, retry later,
 //   - Shopify rejected it (e.g. out of stock) -> the claim is released so a
 //     corrected retry can go through.
-// If a request dies after Shopify accepted the order but before we saved its
-// id (rare), the claim stays and expires after CLAIM_TTL_MS; check Shopify
-// (orders tagged "Aeza", note has the Aeza order id) before retrying then.
+// Every Shopify order is also tagged with its Aeza order id, and that tag is
+// looked up before creating. So if a request died after Shopify accepted the
+// order but before we saved its id, the retry (once the claim expires after
+// CLAIM_TTL_MS) finds and adopts that order instead of creating a second one.
 
 const CLAIM_TTL_MS = 2 * 60 * 1000;
 const GATEWAY = "Aeza (Cashfree)";
@@ -22,6 +23,8 @@ export type OrderRequest = {
   aezaOrderId: string;
   isTest: boolean;
   lineItems: Array<{ variantId: string; quantity: number; price: string }>;
+  /** Shipping charged to the customer, e.g. "49.00". Omit or "0" for free shipping. */
+  shippingPrice?: string;
   customer: { name: string; email: string; phone: string };
   shippingAddress: {
     firstName?: string;
@@ -97,10 +100,32 @@ export async function createAezaOrder(input: OrderRequest): Promise<OrderResult>
     }>(admin, `#graphql query ShopCurrency { shop { currencyCode } }`, {});
     const currencyCode = shopInfo.currencyCode;
 
-    const totalPaise = input.lineItems.reduce(
-      (sum, item) => sum + toMinorUnits(item.price) * item.quantity,
-      0,
-    );
+    const recovered = await findShopifyOrderByTag(admin, aezaOrderId);
+    if (recovered) {
+      await prisma.shopifyOrder.update({
+        where: { id: claim.id },
+        data: {
+          shopifyOrderId: recovered.id,
+          shopifyOrderName: recovered.name,
+          financialStatus: "paid",
+        },
+      });
+      return {
+        status: 200,
+        body: {
+          shopifyOrderId: recovered.id,
+          shopifyOrderName: recovered.name,
+          duplicate: true,
+        },
+      };
+    }
+
+    const shippingPaise = toMinorUnits(input.shippingPrice ?? "0");
+    const totalPaise =
+      input.lineItems.reduce(
+        (sum, item) => sum + toMinorUnits(item.price) * item.quantity,
+        0,
+      ) + shippingPaise;
     const money = (minor: number) => ({
       shopMoney: { amount: (minor / 100).toFixed(2), currencyCode },
     });
@@ -129,7 +154,9 @@ export async function createAezaOrder(input: OrderRequest): Promise<OrderResult>
           phone: input.customer.phone,
           test: input.isTest,
           financialStatus: "PAID",
-          tags: input.isTest ? ["Aeza", "Aeza Test"] : ["Aeza"],
+          tags: input.isTest
+            ? ["Aeza", "Aeza Test", aezaOrderId]
+            : ["Aeza", aezaOrderId],
           note: `Aeza order ${aezaOrderId} (payment ${input.paymentReference})`,
           sourceName: "Aeza",
           sourceIdentifier: aezaOrderId,
@@ -139,6 +166,13 @@ export async function createAezaOrder(input: OrderRequest): Promise<OrderResult>
             quantity: item.quantity,
             priceSet: money(toMinorUnits(item.price)),
           })),
+          ...(shippingPaise > 0
+            ? {
+                shippingLines: [
+                  { title: "Aeza shipping", priceSet: money(shippingPaise) },
+                ],
+              }
+            : {}),
           shippingAddress: {
             firstName: address.firstName ?? firstName,
             lastName: address.lastName ?? (rest.join(" ") || firstName),
@@ -190,7 +224,7 @@ export async function createAezaOrder(input: OrderRequest): Promise<OrderResult>
     });
     return {
       status: 201,
-      body: { shopifyOrderId: order.id, shopifyOrderName: order.name },
+      body: { shopifyOrderId: order.id, shopifyOrderName: order.name, created: true },
     };
   } catch (error) {
     // Outcome unknown (network, timeout): keep the claim so a quick retry
@@ -198,6 +232,25 @@ export async function createAezaOrder(input: OrderRequest): Promise<OrderResult>
     console.error(`Order ${aezaOrderId} for ${shop} failed:`, error);
     return fail(502, "shopify_unavailable");
   }
+}
+
+/** The Shopify order already tagged with this Aeza order id, if any. */
+async function findShopifyOrderByTag(
+  admin: Parameters<typeof runAdminQuery>[0],
+  aezaOrderId: string,
+): Promise<{ id: string; name: string } | null> {
+  const data = await runAdminQuery<{
+    orders: { nodes: Array<{ id: string; name: string }> };
+  }>(
+    admin,
+    `#graphql
+    query FindAezaOrder($q: String!) {
+      orders(first: 1, query: $q) { nodes { id name } }
+    }`,
+    // aezaOrderId is validated (no quotes, commas or backslashes), so it is safe to quote.
+    { q: `tag:"${aezaOrderId}"` },
+  );
+  return data.orders.nodes[0] ?? null;
 }
 
 async function claimOrder(

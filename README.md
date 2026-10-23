@@ -36,6 +36,8 @@ and not deleted.
 | `MAIN_BACKEND_API_KEY` | Bearer token the main Aeza backend sends to `POST /api/orders`. Long random string. |
 | `CRON_SECRET` | Vercel sends it as a Bearer token to the cron route. Long random string. |
 | `AEZA_SYNC_MODE` | `off` (default, no-op) or `log` (logs every catalog change it would send to Aeza). |
+| `BACKEND_EVENTS_URL` | Main Aeza backend's `https://<api host>/api/webhooks/connector`; order events (shipped, delivered, cancelled) for Aeza orders are forwarded there. |
+| `CONNECTOR_EVENTS_SECRET` | Shared with the backend; signs those forwarded events (`openssl rand -hex 32`). |
 
 `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` are **not used**, including in local
 dev: register your dev store with `store:add` like any brand.
@@ -84,6 +86,16 @@ dev: register your dev store with `store:add` like any brand.
    the brand. On install the store becomes `connected` and the full product
    sync starts on its own.
 
+## API for the main Aeza backend
+
+All with `Authorization: Bearer <MAIN_BACKEND_API_KEY>`.
+
+| Endpoint | Use |
+|---|---|
+| `POST /api/catalog/resolve` | `{ shop, items: [{ handle, size }] }` -> live Shopify variant, price and stock per item (matched by handle + size), plus every size of each product. Called when the backend prices a cart. |
+| `POST /api/orders` | Create the paid Shopify order (below). |
+| `GET /api/order-fulfillments?shop=&aezaOrderId=` | Live tracking / delivery events of that order (shape of the backend's `fetchOrderFulfillments`). |
+
 ## Order API
 
 `POST /api/orders` with `Authorization: Bearer <MAIN_BACKEND_API_KEY>`:
@@ -101,9 +113,13 @@ dev: register your dev store with `store:add` like any brand.
     "address1": "12 MG Road", "address2": "Flat 4B", "city": "Bengaluru",
     "provinceCode": "KA", "zip": "560001", "countryCode": "IN"
   },
-  "paymentReference": "cf_pay_abc123"
+  "paymentReference": "cf_pay_abc123",
+  "shippingPrice": "49.00"
 }
 ```
+
+`aezaOrderId`: max 40 characters, letters/digits/`-`/`_` (it becomes a Shopify tag).
+`shippingPrice` is optional (default `0`); it's added as a shipping line and to the paid amount.
 
 Creates a **paid** order (one successful SALE transaction via gateway
 "Aeza (Cashfree)" for the line total), tagged `Aeza` (+ `Aeza Test` for test

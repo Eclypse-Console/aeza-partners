@@ -19,7 +19,8 @@
     "vite": "vite",
     "typecheck": "react-router typegen && tsc --noEmit",
     "store:add": "node --env-file-if-exists=.env scripts/store-add.ts",
-    "sessions:encrypt": "node --env-file-if-exists=.env scripts/encrypt-sessions.ts"
+    "store:token": "node --env-file-if-exists=.env scripts/store-token.ts",
+    "sessions:encrypt":"node --env-file-if-exists=.env scripts/encrypt-sessions.ts"
   },
   "type": "module",
   "engines": {

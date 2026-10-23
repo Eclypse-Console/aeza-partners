@@ -48,7 +48,10 @@ function parseOrderRequest(body: unknown): OrderRequest | { error: string } {
 
   const shop = normalizeShopDomain(input.shop as string);
   if (!shop) return { error: "shop must be a *.myshopify.com domain" };
-  if (!isText(input.aezaOrderId, 100)) return { error: "aezaOrderId is required" };
+  // It becomes a Shopify order tag, and Shopify tags are at most 40 characters.
+  if (!isText(input.aezaOrderId, 40) || !/^[A-Za-z0-9_-]+$/.test(input.aezaOrderId as string)) {
+    return { error: "aezaOrderId is required (max 40 characters: letters, digits, - and _)" };
+  }
   if (!isText(input.paymentReference, 200)) {
     return { error: "paymentReference is required" };
   }
@@ -78,6 +81,14 @@ function parseOrderRequest(body: unknown): OrderRequest | { error: string } {
     });
   }
 
+  const shippingPrice =
+    input.shippingPrice === undefined || input.shippingPrice === null
+      ? "0"
+      : String(input.shippingPrice);
+  if (!/^\d+(\.\d{1,2})?$/.test(shippingPrice)) {
+    return { error: "shippingPrice must be an amount like \"49.00\"" };
+  }
+
   const customer = (input.customer ?? {}) as Record<string, unknown>;
   if (!isText(customer.name) || !isText(customer.email) || !isText(customer.phone)) {
     return { error: "customer.name, customer.email and customer.phone are required" };
@@ -104,6 +115,7 @@ function parseOrderRequest(body: unknown): OrderRequest | { error: string } {
     aezaOrderId: (input.aezaOrderId as string).trim(),
     isTest: input.isTest === true,
     lineItems,
+    shippingPrice,
     customer: {
       name: customer.name as string,
       email: customer.email as string,

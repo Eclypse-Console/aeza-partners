@@ -1,0 +1,281 @@
+{
+  "info": {
+    "name": "Aeza - Shopify Admin API (brand store)",
+    "description": "Part A: the exact Shopify Admin GraphQL calls the Aeza Partner app makes (needs `shop` + `access_token`; get a token with `npm run store:token -- --shop <shop>`, it expires after ~1 hour). Part B: the Aeza app's own endpoints (order API, nightly sync). See docs/aeza-shopify-data-sync-guide.pdf.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "shop",
+      "value": "cb0c82-9b.myshopify.com"
+    },
+    {
+      "key": "api_version",
+      "value": "2026-07"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "product_id",
+      "value": "gid://shopify/Product/10025366651160"
+    },
+    {
+      "key": "inventory_item_id",
+      "value": "gid://shopify/InventoryItem/53675457118488"
+    },
+    {
+      "key": "bulk_operation_id",
+      "value": ""
+    },
+    {
+      "key": "app_url",
+      "value": "https://aeza-partners.vercel.app"
+    },
+    {
+      "key": "main_backend_api_key",
+      "value": ""
+    },
+    {
+      "key": "cron_secret",
+      "value": ""
+    },
+    {
+      "key": "variant_id",
+      "value": "gid://shopify/ProductVariant/51615929434392"
+    },
+    {
+      "key": "aeza_order_id",
+      "value": "AEZA-TEST-0001"
+    }
+  ],
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "key",
+        "value": "X-Shopify-Access-Token",
+        "type": "string"
+      },
+      {
+        "key": "value",
+        "value": "{{access_token}}",
+        "type": "string"
+      },
+      {
+        "key": "in",
+        "value": "header",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "A. Shopify Admin API (brand store)",
+      "item": [
+        {
+          "name": "A1. One product with all variants (used by product webhooks)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "https://{{shop}}/admin/api/{{api_version}}/graphql.json",
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query RefreshProduct($id: ID!, $variantsAfter: String) {\n  product(id: $id) {\n    id\n    title\n    handle\n    descriptionHtml\n    vendor\n    productType\n    tags\n    status\n    updatedAt\n    media(first: 50) { nodes { ... on MediaImage { image { url } } } }\n    variants(first: 250, after: $variantsAfter) {\n      nodes {\n        id\n        sku\n        title\n        price\n        compareAtPrice\n        inventoryQuantity\n        selectedOptions { name value }\n        inventoryItem { id }\n      }\n      pageInfo { hasNextPage endCursor }\n    }\n  }\n}",
+                "variables": "{\n  \"id\": \"{{product_id}}\"\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "A2. Browse products, 10 per page (same fields as the full sync)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "https://{{shop}}/admin/api/{{api_version}}/graphql.json",
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query BrowseProducts($after: String) {\n  products(first: 10, after: $after, sortKey: CREATED_AT, reverse: true) {\n    nodes {\n      id\n      title\n      handle\n      descriptionHtml\n      vendor\n      productType\n      tags\n      status\n      updatedAt\n      media(first: 10) { nodes { ... on MediaImage { image { url } } } }\n      variants(first: 50) {\n        nodes {\n          id\n          sku\n          title\n          price\n          compareAtPrice\n          inventoryQuantity\n          selectedOptions { name value }\n          inventoryItem { id }\n        }\n      }\n    }\n    pageInfo { hasNextPage endCursor }\n  }\n}",
+                "variables": "{\n  \"after\": null\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "A3. Start full catalog export (bulk operation, what install + nightly sync run)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "https://{{shop}}/admin/api/{{api_version}}/graphql.json",
+            "description": "Only reads products. Shopify sends bulk_operations/finish to the app when done, which makes the live app re-import the catalog (harmless).",
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation StartProductBulkSync($query: String!) {\n  bulkOperationRunQuery(query: $query) {\n    bulkOperation { id status }\n    userErrors { field message }\n  }\n}",
+                "variables": "{\n  \"query\": \"{ products { edges { node { id title handle descriptionHtml vendor productType tags status updatedAt media { edges { node { ... on MediaImage { image { url } } } } } variants { edges { node { id sku title price compareAtPrice inventoryQuantity selectedOptions { name value } inventoryItem { id } } } } } } } }\"\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "A4. Latest export status + download URL (open `url` to see the JSONL)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "https://{{shop}}/admin/api/{{api_version}}/graphql.json",
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "{\n  currentBulkOperation(type: QUERY) {\n    id\n    status\n    errorCode\n    objectCount\n    createdAt\n    completedAt\n    url\n  }\n}",
+                "variables": ""
+              }
+            }
+          }
+        },
+        {
+          "name": "A5. Stock for one inventory item (used by inventory_levels/update)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "https://{{shop}}/admin/api/{{api_version}}/graphql.json",
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query InventoryItemQuantity($id: ID!) {\n  inventoryItem(id: $id) {\n    variants(first: 1) { nodes { id inventoryQuantity } }\n  }\n}",
+                "variables": "{\n  \"id\": \"{{inventory_item_id}}\"\n}"
+              }
+            }
+          }
+        },
+        {
+          "name": "A6. Shop currency (used before creating an order)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "https://{{shop}}/admin/api/{{api_version}}/graphql.json",
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "{ shop { name currencyCode } }",
+                "variables": ""
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "B. Aeza app endpoints",
+      "item": [
+        {
+          "name": "B1. Create test order (POST /api/orders)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{main_backend_api_key}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{app_url}}/api/orders",
+            "description": "Creates a REAL paid order in the brand's Shopify store (tagged 'Aeza Test', stock reduced). Run on a dev store, or with the brand's agreement. Send it twice: the 2nd response must be 200 with duplicate: true.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"shop\": \"{{shop}}\",\n  \"aezaOrderId\": \"{{aeza_order_id}}\",\n  \"isTest\": true,\n  \"lineItems\": [\n    {\n      \"variantId\": \"{{variant_id}}\",\n      \"quantity\": 1,\n      \"price\": \"2353.00\"\n    }\n  ],\n  \"customer\": {\n    \"name\": \"Aeza Test Customer\",\n    \"email\": \"test@aeza.in\",\n    \"phone\": \"+919800000000\"\n  },\n  \"shippingAddress\": {\n    \"address1\": \"12 MG Road\",\n    \"address2\": \"Flat 4B\",\n    \"city\": \"Bengaluru\",\n    \"provinceCode\": \"KA\",\n    \"zip\": \"560001\",\n    \"countryCode\": \"IN\"\n  },\n  \"paymentReference\": \"TEST-PAYMENT-0001\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "B2. Order API without key (expect 401)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "noauth"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{app_url}}/api/orders",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "B3. Run nightly re-sync now (GET /api/cron/resync)",
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{cron_secret}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "header": [],
+            "url": "{{app_url}}/api/cron/resync",
+            "description": "Starts a full catalog export for every connected store. Response: {started, failed, prunedWebhookEvents}."
+          }
+        }
+      ],
+      "auth": {
+        "type": "noauth"
+      }
+    }
+  ]
+}
