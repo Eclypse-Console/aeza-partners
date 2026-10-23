@@ -97,7 +97,14 @@ export async function createAezaOrder(input: OrderRequest): Promise<OrderResult>
     const { admin } = await unauthenticated.admin(shop);
     const { shop: shopInfo } = await runAdminQuery<{
       shop: { currencyCode: string };
-    }>(admin, `#graphql query ShopCurrency { shop { currencyCode } }`, {});
+    }>(
+      admin,
+      // The "#graphql" tag must sit on its own line: "#" starts a GraphQL comment
+      // that runs to the end of the line, so anything after it would be ignored.
+      `#graphql
+      query ShopCurrency { shop { currencyCode } }`,
+      {},
+    );
     const currencyCode = shopInfo.currencyCode;
 
     const recovered = await findShopifyOrderByTag(admin, aezaOrderId);
