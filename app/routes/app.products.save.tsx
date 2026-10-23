@@ -6,6 +6,7 @@ import {
   isValidProductGid,
   saveProductSelections,
 } from "../models/products.server";
+import { getPublishMode } from "../services/product-sync.server";
 
 // Resource route (no UI), POST only. Saves the brand's pending selection
 // from the dashboard in one go: a list of { productId, published } pairs.
@@ -20,6 +21,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const { session, admin } = await authenticate.admin(request);
+
+  if ((await getPublishMode(session.shop)) === "all") {
+    return Response.json(
+      {
+        error:
+          "All products are shown on Aeza automatically. Switch to \"Only selected products\" to choose.",
+      },
+      { status: 409 },
+    );
+  }
 
   const formData = await request.formData();
   const invalid = Response.json(

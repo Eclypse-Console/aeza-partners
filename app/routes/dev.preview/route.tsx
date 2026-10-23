@@ -103,6 +103,7 @@ export default function DevPreview() {
             initialCounts={{ published: 0, total: MOCK_PRODUCTS.length }}
             collections={[]}
             productsError={null}
+            initialPublishMode="selected"
           />
         )}
       </div>

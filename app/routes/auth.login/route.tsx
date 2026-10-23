@@ -6,13 +6,23 @@ import { Form, useActionData, useLoaderData } from "react-router";
 import { login } from "../../shopify.server";
 import { loginErrorMessage } from "./error.server";
 
+// Manual shop-domain login is a local development aid only. In production
+// brands always open the app from their Shopify admin.
+function ensureDevelopment() {
+  if (process.env.NODE_ENV === "production") {
+    throw new Response("Not Found", { status: 404 });
+  }
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
+  ensureDevelopment();
   const errors = loginErrorMessage(await login(request));
 
   return { errors };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
+  ensureDevelopment();
   const errors = loginErrorMessage(await login(request));
 
   return {

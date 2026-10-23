@@ -16,21 +16,21 @@ datasource db {
 }
 
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
 
@@ -38,27 +38,48 @@ model Session {
 }
 
 model BrandProfile {
-  id                Int       @id @default(autoincrement())
-  shop              String    @unique
+  id                Int           @id @default(autoincrement())
+  shop              String        @unique
   brandName         String
   contactEmail      String
   contactPhone      String
   websiteUrl        String?
   category          String?
-  aiTrainingConsent Boolean   @default(false)
+  aiTrainingConsent Boolean       @default(false)
   consentTimestamp  DateTime?
-  status            String    @default("pending_review")
-  createdAt         DateTime  @default(now())
+  status            String        @default("pending_review")
+  createdAt         DateTime      @default(now())
+  store             ShopifyStore?
 
   @@schema("shopify_connector")
 }
 
-// Tracks which of a shop's Shopify products the brand has chosen to publish
-// to Aeza, and the state of that decision. `title`/`imageUrl` are always
-// re-fetched from Shopify's Admin API server-side before being written here
-// (never trusted from the client) so this table can't be poisoned with
-// forged product data. `syncStatus`/`syncError` are placeholders for a real
-// AEZA-side sync call to be wired in later without changing this shape.
+// One row per brand store. Each brand has its own private (custom
+// distribution) Shopify app, so every store carries its own app credentials.
+// `clientSecretEnc` is AES-256-GCM encrypted (see app/lib/crypto.server.ts)
+// and is never stored or logged in plain text.
+model ShopifyStore {
+  id              Int           @id @default(autoincrement())
+  shop            String        @unique
+  clientId        String        @unique
+  clientSecretEnc String
+  brandProfileId  Int?          @unique
+  brandProfile    BrandProfile? @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+  status          String        @default("pending") // pending | connected | uninstalled
+  publishMode     String        @default("selected") // selected | all
+  installedAt     DateTime?
+  uninstalledAt   DateTime?
+  lastFullSyncAt  DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@schema("shopify_connector")
+}
+
+// LEGACY, no longer read or written by the app: replaced by ShopifyProduct,
+// which the 20261023130000 migration copied these rows into. Kept (not
+// dropped) so no data is lost and older deployments keep working; remove in
+// a separate, explicit cleanup migration once it's no longer needed.
 model PublishedProduct {
   id           Int       @id @default(autoincrement())
   shop         String
@@ -73,5 +94,96 @@ model PublishedProduct {
 
   @@unique([shop, productId])
   @@index([shop])
+  @@schema("shopify_connector")
+}
+
+// Full copy of a brand's Shopify product, kept in sync by the product sync
+// and webhooks. `published` is the brand's decision to show it on Aeza and is
+// never overwritten by a sync. Fields other than title are nullable because
+// rows copied from PublishedProduct only had a title and image until the
+// first full sync fills them in. `deletedAt` is set when the product is
+// deleted in Shopify (kept for history, never shown on Aeza).
+model ShopifyProduct {
+  id               Int              @id @default(autoincrement())
+  shop             String
+  productId        String // Shopify GID
+  title            String
+  handle           String?
+  descriptionHtml  String?
+  vendor           String?
+  productType      String?
+  tags             String[]         @default([])
+  images           Json             @default("[]") // array of image URLs
+  status           String? // ACTIVE | DRAFT | ARCHIVED
+  published        Boolean          @default(false)
+  shopifyUpdatedAt DateTime?
+  syncedAt         DateTime?
+  syncStatus       String           @default("idle") // idle | recorded | syncing | error
+  syncError        String?
+  deletedAt        DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  variants         ShopifyVariant[]
+
+  @@unique([shop, productId])
+  @@index([shop, published])
+  @@schema("shopify_connector")
+}
+
+model ShopifyVariant {
+  id              Int            @id @default(autoincrement())
+  variantId       String         @unique // Shopify GID
+  shop            String
+  productId       String // Shopify product GID
+  product         ShopifyProduct @relation(fields: [shop, productId], references: [shop, productId], onDelete: Cascade)
+  sku             String?
+  title           String
+  options         Json           @default("{}") // {"Size":"M","Color":"Blue"}
+  price           Decimal        @db.Decimal(12, 2)
+  compareAtPrice  Decimal?       @db.Decimal(12, 2)
+  inventoryItemId String? // Shopify GID
+  availableQty    Int            @default(0)
+  updatedAt       DateTime       @updatedAt
+
+  @@index([shop, productId])
+  @@index([inventoryItemId])
+  @@schema("shopify_connector")
+}
+
+// An order Aeza placed on a brand's store. (shop, aezaOrderId) makes order
+// creation idempotent: a retried request finds the existing row.
+model ShopifyOrder {
+  id                Int       @id @default(autoincrement())
+  shop              String
+  aezaOrderId       String
+  shopifyOrderId    String?   @unique // Shopify GID
+  shopifyOrderName  String? // e.g. "#1042"
+  financialStatus   String?
+  fulfillmentStatus String?
+  cancelledAt       DateTime?
+  trackingCompany   String?
+  trackingNumber    String?
+  trackingUrl       String?
+  shipmentStatus    String? // from fulfillments/*: in_transit, delivered, ...
+  isTest            Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([shop, aezaOrderId])
+  @@schema("shopify_connector")
+}
+
+// One row per webhook delivery (X-Shopify-Webhook-Id), so a redelivered
+// webhook is recognised and processed only once.
+model WebhookEvent {
+  webhookId   String    @id
+  shop        String
+  topic       String
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  status      String    @default("received") // received | done | failed
+  error       String?
+
+  @@index([shop, topic])
   @@schema("shopify_connector")
 }

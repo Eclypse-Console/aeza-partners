@@ -1,0 +1,52 @@
+# Template for one brand's private (custom distribution) Aeza app.
+# Don't edit generated shopify.app.<slug>.toml files by hand: change this
+# template and regenerate them with `npm run store:add`.
+# Placeholders: {{CLIENT_ID}}, {{APP_NAME}}.
+
+client_id = "{{CLIENT_ID}}"
+name = "{{APP_NAME}}"
+application_url = "https://aeza-partners.vercel.app"
+embedded = true
+
+[access_scopes]
+# Keep in sync with the SCOPES env var on the deployment.
+scopes = "read_products,read_inventory,read_locations,read_orders,write_orders,read_fulfillments"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [ "https://aeza-partners.vercel.app/auth/callback" ]
+
+[webhooks]
+api_version = "2026-07"
+
+  [[webhooks.subscriptions]]
+  uri = "https://aeza-partners.vercel.app/webhooks/app/uninstalled"
+  topics = [ "app/uninstalled" ]
+
+  [[webhooks.subscriptions]]
+  uri = "https://aeza-partners.vercel.app/webhooks/app/scopes_update"
+  topics = [ "app/scopes_update" ]
+
+  # Catalog, stock, order and sync events; all handled by app/routes/webhooks.events.tsx.
+  [[webhooks.subscriptions]]
+  uri = "https://aeza-partners.vercel.app/webhooks/events"
+  topics = [
+    "products/create",
+    "products/update",
+    "products/delete",
+    "inventory_levels/update",
+    "orders/updated",
+    "orders/cancelled",
+    "fulfillments/create",
+    "fulfillments/update",
+    "bulk_operations/finish",
+  ]
+
+  [[webhooks.subscriptions]]
+  uri = "https://aeza-partners.vercel.app/webhooks/compliance"
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
+
+[build]
+# These are live brand apps: `shopify app dev` must never repoint them at a tunnel.
+automatically_update_urls_on_dev = false

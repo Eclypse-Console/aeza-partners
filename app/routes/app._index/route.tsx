@@ -9,6 +9,8 @@ import { useFetcher, useLoaderData } from "react-router";
 import { authenticate } from "../../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../../db.server";
+import { getPublishMode } from "../../services/product-sync.server";
+import { linkBrandProfile } from "../../services/store.server";
 import {
   fetchCollections,
   fetchShopifyProducts,
@@ -39,6 +41,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     productsError: null as string | null,
     collections: [] as ShopifyCollection[],
     counts: { published: 0, total: null } as ProductCounts,
+    publishMode: await getPublishMode(session.shop),
   };
 
   if (resetOnboarding) {
@@ -70,10 +73,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ]);
     const merged = await mergeWithPublishState(session.shop, products);
     return {
+      ...empty,
       brandProfile,
       products: merged,
       pageInfo,
-      productsError: null as string | null,
       collections,
       counts,
     };
@@ -135,6 +138,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       status: "pending_review",
     },
   });
+  await linkBrandProfile(session.shop, brandProfile.id);
 
   return { brandProfile };
 };
@@ -149,6 +153,7 @@ export default function Index() {
     productsError,
     collections,
     counts,
+    publishMode,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
@@ -196,6 +201,7 @@ export default function Index() {
           initialCounts={counts}
           collections={collections}
           productsError={productsError}
+          initialPublishMode={publishMode}
         />
       )}
     </div>

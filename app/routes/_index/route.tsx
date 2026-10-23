@@ -1,10 +1,9 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { redirect, Form, useLoaderData } from "react-router";
+import { redirect } from "react-router";
 
-import { login } from "../../shopify.server";
-
-import styles from "./styles.module.css";
-
+// Each brand installs its own private Aeza app from a link we send them, so
+// there's no public landing page or shop-login form here. Requests from the
+// Shopify admin (?shop=...) go straight into the embedded app.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
 
@@ -12,63 +11,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     throw redirect(`/app?${url.searchParams.toString()}`);
   }
 
-  return { showForm: Boolean(login) };
+  return null;
 };
 
-export default function App() {
-  const { showForm } = useLoaderData<typeof loader>();
-
+export default function Index() {
   return (
-    <div className={styles.page}>
-      <div className={styles.content}>
-        <h1 className={styles.heading}>
-          Discover Aeza — India&apos;s{" "}
-          <span className={styles.accentGreen}>AI stylist</span> and
-          multi-brand fashion marketplace
-        </h1>
-        <p className={styles.text}>
-          We help your brand grow sales through AI-powered personalization —
-          tailored outfit recommendations and virtual try-on that build
-          shopper confidence, drive conversion, and reduce returns from
-          sizing guesswork.
-        </p>
-
-        {showForm && (
-          <Form className={styles.form} method="post" action="/auth/login">
-            <label className={styles.label} htmlFor="shop">
-              Shop domain
-            </label>
-            <input
-              id="shop"
-              className={styles.input}
-              type="text"
-              name="shop"
-              placeholder="my-shop-domain.myshopify.com"
-            />
-            <button className={styles.button} type="submit">
-              Log in
-            </button>
-          </Form>
-        )}
-
-        <ul className={styles.list}>
-          <li className={styles.listItem}>
-            <strong className={styles.listItemTitle}>AI Stylist</strong>
-            Conversational recommendations pulled straight from your
-            catalog — more discovery, higher order value.
-          </li>
-          <li className={styles.listItem}>
-            <strong className={styles.listItemTitle}>Virtual Try-On</strong>
-            Shoppers see it on themselves before they buy — fewer size
-            returns, stronger margins.
-          </li>
-          <li className={styles.listItem}>
-            <strong className={styles.listItemTitle}>Dynamic Sizing</strong>
-            Aeza learns your true fit, not a generic chart — fewer
-            wrong-size orders, more repeat buyers.
-          </li>
-        </ul>
-      </div>
-    </div>
+    <main style={{ fontFamily: "sans-serif", padding: "2rem" }}>
+      <h1>Aeza Partner</h1>
+      <p>Please open Aeza from your Shopify admin.</p>
+    </main>
   );
 }

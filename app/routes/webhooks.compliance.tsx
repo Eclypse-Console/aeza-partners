@@ -1,27 +1,20 @@
 import type { ActionFunctionArgs } from "react-router";
-import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { handleWebhook } from "../services/webhooks.server";
 
 // Shopify's three mandatory GDPR/compliance topics all deliver to this one
-// endpoint (see compliance_topics in shopify.app.toml). This app does not
-// store any customer PII — only shop-level BrandProfile and Session rows —
-// so only shop/redact has data to act on.
+// endpoint (see compliance_topics in the app toml). This app does not store
+// customer PII (orders are kept without customer details), so only
+// shop/redact has data to act on. ShopifyStore (the app's credentials) is
+// kept so the brand can reinstall; variants cascade with their products.
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, topic } = await authenticate.webhook(request);
+  return handleWebhook(request, async ({ shop, topic }) => {
+    if (topic !== "SHOP_REDACT") return;
 
-  console.log(`Received ${topic} webhook for ${shop}`);
-
-  switch (topic) {
-    case "CUSTOMERS_DATA_REQUEST":
-    case "CUSTOMERS_REDACT":
-      // No customer PII is stored by this app.
-      break;
-    case "SHOP_REDACT":
-      await db.session.deleteMany({ where: { shop } });
-      await db.brandProfile.deleteMany({ where: { shop } });
-      await db.publishedProduct.deleteMany({ where: { shop } });
-      break;
-  }
-
-  return new Response();
+    await db.session.deleteMany({ where: { shop } });
+    await db.brandProfile.deleteMany({ where: { shop } });
+    await db.shopifyProduct.deleteMany({ where: { shop } });
+    await db.shopifyOrder.deleteMany({ where: { shop } });
+    await db.webhookEvent.deleteMany({ where: { shop } });
+  });
 };

@@ -1,10 +1,11 @@
 import type { Prisma } from "@prisma/client";
 import prisma from "../db.server";
+import { pushProductsToAeza } from "../services/aeza-catalog.server";
 
 // Loose shape for the authenticated Shopify Admin GraphQL client returned by
 // `authenticate.admin(request)`, narrow enough to type-check the calls we
 // make here without importing internal SDK types that may shift versions.
-type AdminGraphqlClient = {
+export type AdminGraphqlClient = {
   graphql: (
     query: string,
     options?: { variables?: Record<string, unknown> },
@@ -80,7 +81,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * backoff when Shopify reports the call as THROTTLED (its cost-based rate
  * limit), which bulk actions can hit when paging through large catalogs.
  */
-async function runAdminQuery<T>(
+export async function runAdminQuery<T>(
   admin: AdminGraphqlClient,
   query: string,
   variables: Record<string, unknown>,
@@ -327,8 +328,8 @@ export async function getProductCounts(
   shop: string,
   collectionId?: string | null,
 ): Promise<ProductCounts> {
-  const publishedPromise = prisma.publishedProduct.count({
-    where: { shop, published: true },
+  const publishedPromise = prisma.shopifyProduct.count({
+    where: { shop, published: true, deletedAt: null },
   });
 
   const totalPromise: Promise<number | null> = (async () => {
@@ -386,7 +387,7 @@ export async function mergeWithPublishState(
   const productIds = products.map((product) => product.id);
 
   const publishedRows = productIds.length
-    ? await prisma.publishedProduct.findMany({
+    ? await prisma.shopifyProduct.findMany({
         where: { shop, productId: { in: productIds } },
       })
     : [];
@@ -424,7 +425,7 @@ export async function saveProductSelections({
 }): Promise<{ published: number; unpublished: number; publishedTotal: number }> {
   const ids = changes.map(({ product }) => product.id);
   const existing = ids.length
-    ? await prisma.publishedProduct.findMany({
+    ? await prisma.shopifyProduct.findMany({
         where: { shop, productId: { in: ids } },
         select: { productId: true, published: true },
       })
@@ -446,17 +447,12 @@ export async function saveProductSelections({
     }
   }
 
-  const now = new Date();
-  const recorded = {
-    syncStatus: "recorded",
-    syncError: null,
-    lastSyncedAt: now,
-  };
+  const recorded = { syncStatus: "recorded", syncError: null };
   const operations: Prisma.PrismaPromise<Prisma.BatchPayload>[] = [];
 
   if (toPublish.length > 0) {
     operations.push(
-      prisma.publishedProduct.updateMany({
+      prisma.shopifyProduct.updateMany({
         where: { shop, productId: { in: toPublish } },
         data: { published: true, ...recorded },
       }),
@@ -464,7 +460,7 @@ export async function saveProductSelections({
   }
   if (toUnpublish.length > 0) {
     operations.push(
-      prisma.publishedProduct.updateMany({
+      prisma.shopifyProduct.updateMany({
         where: { shop, productId: { in: toUnpublish } },
         data: { published: false, ...recorded },
       }),
@@ -472,15 +468,15 @@ export async function saveProductSelections({
   }
   if (toCreate.length > 0) {
     operations.push(
-      prisma.publishedProduct.createMany({
+      prisma.shopifyProduct.createMany({
         data: toCreate.map((product) => ({
           shop,
           productId: product.id,
           title: product.title,
-          imageUrl: product.imageUrl,
+          images: product.imageUrl ? [product.imageUrl] : [],
+          status: product.status,
           published: true,
           syncStatus: "recorded",
-          lastSyncedAt: now,
         })),
         skipDuplicates: true,
       }),
@@ -490,9 +486,14 @@ export async function saveProductSelections({
   if (operations.length > 0) {
     await prisma.$transaction(operations);
   }
+  await pushProductsToAeza(shop, [
+    ...toPublish,
+    ...toUnpublish,
+    ...toCreate.map((product) => product.id),
+  ]);
 
-  const publishedTotal = await prisma.publishedProduct.count({
-    where: { shop, published: true },
+  const publishedTotal = await prisma.shopifyProduct.count({
+    where: { shop, published: true, deletedAt: null },
   });
 
   return {
@@ -514,18 +515,17 @@ async function applyPublishStateToPage(
   if (products.length === 0) return 0;
 
   const ids = products.map((product) => product.id);
-  const existing = await prisma.publishedProduct.findMany({
+  const existing = await prisma.shopifyProduct.findMany({
     where: { shop, productId: { in: ids } },
     select: { productId: true },
   });
   const existingIds = new Set(existing.map((row) => row.productId));
-  const now = new Date();
 
   const operations: Prisma.PrismaPromise<Prisma.BatchPayload>[] = [];
 
   if (existingIds.size > 0) {
     operations.push(
-      prisma.publishedProduct.updateMany({
+      prisma.shopifyProduct.updateMany({
         where: {
           shop,
           productId: { in: [...existingIds] },
@@ -535,7 +535,6 @@ async function applyPublishStateToPage(
           published,
           syncStatus: "recorded",
           syncError: null,
-          lastSyncedAt: now,
         },
       }),
     );
@@ -545,15 +544,15 @@ async function applyPublishStateToPage(
     const missing = products.filter((product) => !existingIds.has(product.id));
     if (missing.length > 0) {
       operations.push(
-        prisma.publishedProduct.createMany({
+        prisma.shopifyProduct.createMany({
           data: missing.map((product) => ({
             shop,
             productId: product.id,
             title: product.title,
-            imageUrl: product.imageUrl,
+            images: product.imageUrl ? [product.imageUrl] : [],
+            status: product.status,
             published: true,
             syncStatus: "recorded",
-            lastSyncedAt: now,
           })),
           skipDuplicates: true,
         }),
@@ -562,6 +561,7 @@ async function applyPublishStateToPage(
   }
 
   const results = await prisma.$transaction(operations);
+  await pushProductsToAeza(shop, ids);
   return results.reduce((sum, result) => sum + result.count, 0);
 }
 
@@ -593,15 +593,22 @@ export async function bulkSetPublishState({
   // Fast path: "unpublish everything" is purely a DB update, no need to
   // page through Shopify at all (only when starting fresh, not resuming).
   if (!published && !collectionId && !startAfter) {
-    const result = await prisma.publishedProduct.updateMany({
+    const publishedRows = await prisma.shopifyProduct.findMany({
+      where: { shop, published: true },
+      select: { productId: true },
+    });
+    const result = await prisma.shopifyProduct.updateMany({
       where: { shop, published: true },
       data: {
         published: false,
         syncStatus: "recorded",
         syncError: null,
-        lastSyncedAt: new Date(),
       },
     });
+    await pushProductsToAeza(
+      shop,
+      publishedRows.map((row) => row.productId),
+    );
     return { affected: result.count, truncated: false, nextCursor: null };
   }
 

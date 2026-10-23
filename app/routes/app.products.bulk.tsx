@@ -5,6 +5,7 @@ import {
   bulkSetPublishState,
   isValidCollectionGid,
 } from "../models/products.server";
+import { getPublishMode } from "../services/product-sync.server";
 
 // Resource route (no UI), POST only. Publishes or unpublishes many
 // products at once: the whole store, or every product in one collection.
@@ -18,6 +19,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const { session, admin } = await authenticate.admin(request);
+
+  if ((await getPublishMode(session.shop)) === "all") {
+    return Response.json(
+      {
+        error:
+          "All products are shown on Aeza automatically. Switch to \"Only selected products\" to choose.",
+      },
+      { status: 409 },
+    );
+  }
 
   const formData = await request.formData();
   const published = formData.get("published") === "true";

@@ -643,6 +643,11 @@ type BulkResponse =
     }
   | { error: string };
 
+// Mirrors PublishMode in services/product-sync.server.ts (server-only module).
+type PublishMode = "selected" | "all";
+
+type ModeResponse = { mode: PublishMode } | { error: string };
+
 // Set when a bulk run stopped at its safety limit: the cursor to continue
 // from, and which direction (publish / unpublish) it was running.
 type BulkResume = { cursor: string; published: boolean };
@@ -910,6 +915,7 @@ export function ScreenC({
   initialCounts,
   collections,
   productsError,
+  initialPublishMode,
 }: {
   brandName: string;
   initialProducts: DashboardProduct[];
@@ -917,6 +923,7 @@ export function ScreenC({
   initialCounts: Counts;
   collections: Collection[];
   productsError: string | null;
+  initialPublishMode: PublishMode;
 }) {
   const [products, setProducts] = useState(initialProducts);
   const [pageInfo, setPageInfo] = useState(initialPageInfo);
@@ -935,6 +942,11 @@ export function ScreenC({
   const listFetcher = useFetcher<ListResponse>();
   const bulkFetcher = useFetcher<BulkResponse>();
   const saveFetcher = useFetcher<SaveResponse>();
+  const modeFetcher = useFetcher<ModeResponse>();
+  const [publishMode, setPublishMode] = useState(initialPublishMode);
+  // "all": every active product is on Aeza automatically, so manual
+  // selection and bulk actions are switched off.
+  const showAll = publishMode === "all";
   // Whether the in-flight list request replaces the list (first page of a
   // view) or extends it ("Load more").
   const loadModeRef = useRef<"replace" | "append">("replace");
@@ -948,7 +960,8 @@ export function ScreenC({
   const listLoading = listFetcher.state !== "idle";
   const bulkRunning = bulkFetcher.state !== "idle";
   const saving = saveFetcher.state !== "idle";
-  const busy = listLoading || bulkRunning || saving;
+  const changingMode = modeFetcher.state !== "idle";
+  const busy = listLoading || bulkRunning || saving || changingMode;
 
   const { pendingEntries, toPublishCount } = useMemo(() => {
     const entries = Object.entries(pending);
@@ -1156,6 +1169,39 @@ export function ScreenC({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bulkFetcher.data]);
 
+  // The publish mode changed: reload so every card and the counts reflect it.
+  useEffect(() => {
+    const data = modeFetcher.data;
+    if (!data) return;
+
+    if ("error" in data) {
+      showToast("error", data.error);
+      return;
+    }
+
+    setPublishMode(data.mode);
+    setPending({});
+    setConfirming(null);
+    setBulkResume(null);
+    showToast(
+      "success",
+      data.mode === "all"
+        ? `All active products will be shown on ${AEZA_SITE_LABEL}, including new ones.`
+        : "Only the products you select will be shown on Aeza.",
+    );
+    loadView(collectionId);
+    // Only react to a freshly arrived response.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modeFetcher.data]);
+
+  const changePublishMode = (mode: PublishMode) => {
+    if (mode === publishMode) return;
+    modeFetcher.submit(
+      { mode },
+      { method: "POST", action: "/app/products/mode" },
+    );
+  };
+
   // Stable identity so memoised cards don't re-render when the parent does.
   const toggleProduct = useCallback(
     (productId: string, savedPublished: boolean) => {
@@ -1233,11 +1279,35 @@ export function ScreenC({
       <div className={styles.dashboardHeader}>
         <h1 className={styles.headline}>You&apos;re connected to Aeza</h1>
         <p className={styles.body}>
-          {brandName ? `${brandName}: ` : ""}select the products you want on
-          Aeza&apos;s marketplace, then save. Nothing changes until you hit
-          Save, and published products go live on {AEZA_SITE_LABEL} soon
-          after. You can update your selection anytime.
+          {brandName ? `${brandName}: ` : ""}
+          {showAll
+            ? `every active product in your store is shown on Aeza's marketplace, and new products are added automatically.`
+            : `select the products you want on Aeza's marketplace, then save. Nothing changes until you hit Save, and published products go live on ${AEZA_SITE_LABEL} soon after. You can update your selection anytime.`}
         </p>
+        <div
+          className={styles.bulkActions}
+          role="group"
+          aria-label="Which products appear on Aeza"
+        >
+          <button
+            type="button"
+            className={showAll ? styles.bulkButtonPrimary : styles.bulkButton}
+            aria-pressed={showAll}
+            disabled={busy || hasPending}
+            onClick={() => changePublishMode("all")}
+          >
+            Show all products on Aeza
+          </button>
+          <button
+            type="button"
+            className={showAll ? styles.bulkButton : styles.bulkButtonPrimary}
+            aria-pressed={!showAll}
+            disabled={busy || hasPending}
+            onClick={() => changePublishMode("selected")}
+          >
+            Only selected products
+          </button>
+        </div>
       </div>
 
       {!productsError && (
@@ -1279,7 +1349,7 @@ export function ScreenC({
             )}
 
             <div className={styles.bulkActions}>
-              {confirming ? (
+              {showAll ? null : confirming ? (
                 <>
                   <span className={styles.bulkConfirmText}>
                     {confirming === "publish" ? "Publish" : "Unpublish"} every
@@ -1388,7 +1458,7 @@ export function ScreenC({
               : null}
           </p>
           <div className={styles.gridHeaderActions}>
-            {products.length > 0 && (
+            {products.length > 0 && !showAll && (
               <>
                 <button
                   type="button"
@@ -1459,7 +1529,7 @@ export function ScreenC({
               key={product.id}
               product={product}
               pendingState={pending[product.id]}
-              disabled={saving || bulkRunning}
+              disabled={saving || bulkRunning || changingMode || showAll}
               onToggle={toggleProduct}
             />
           ))}
