@@ -171,7 +171,9 @@ Setup: a Neon branch DB with migrations applied, the app running
 | Command | What |
 |---|---|
 | `npm run store:add -- ...` | Register a brand store + generate its toml (see above). |
-| `npm run sessions:encrypt` | One-off: encrypt tokens in old plain-text `Session` rows. |
+| `npm run brand:onboard -- --shop <website or store> --brand-name "X"` | Step 1 of onboarding a brand: creates and registers its private app. Full checklist: `docs/brand-onboarding.md`. |
+| `npm run brand:deploy -- --shop x.myshopify.com` | Pushes a brand's app config (scopes, webhooks) from the template. |
+| `npm run brand:status [-- --shop x.myshopify.com]` | Where each brand stands: install, token, product counts, webhooks, next step. |
 | `npm run typecheck` / `lint` / `build` | Checks. |
 
 Scripts run on Node's built-in TypeScript support (Node >= 22.18).
