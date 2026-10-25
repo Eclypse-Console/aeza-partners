@@ -5,8 +5,7 @@ import { decrypt, encrypt, isEncrypted } from "./crypto.server";
 // Wraps another session storage (PrismaSessionStorage) so access and refresh
 // tokens are encrypted before they're written and decrypted when read. Rows
 // still holding a plain-text token (written before this wrapper existed) are
-// read as-is and re-encrypted the next time the library stores the session;
-// scripts/encrypt-sessions.ts converts them all in one go.
+// read as-is and re-encrypted the next time the library stores the session.
 export class EncryptedSessionStorage implements SessionStorage {
   constructor(private readonly inner: SessionStorage) {}
 

@@ -9,8 +9,11 @@ application_url = "https://aeza-partners.vercel.app"
 embedded = true
 
 [access_scopes]
-# Keep in sync with the SCOPES env var on the deployment.
-scopes = "read_products,read_inventory,read_locations,read_orders,write_orders,read_fulfillments"
+# SCOPES on the deployment must stay a subset of every installed brand's scopes
+# (an app with fewer scopes than SCOPES looks unauthorised). read_returns,
+# write_returns, read_metaobjects and read_metaobject_definitions are ahead of
+# SCOPES until every brand has approved them.
+scopes = "read_products,read_inventory,read_locations,read_orders,write_orders,read_fulfillments,read_returns,write_returns,read_metaobjects,read_metaobject_definitions"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
