@@ -20,6 +20,10 @@
     "typecheck": "react-router typegen && tsc --noEmit",
     "store:add": "node --env-file-if-exists=.env scripts/store-add.ts",
     "store:token": "node --env-file-if-exists=.env scripts/store-token.ts",
+    "store:full-export": "node --env-file-if-exists=.env scripts/store-full-export.ts",
+    "catalog:sync": "node --env-file-if-exists=.env scripts/catalog-sync.ts",
+    "catalog:compare": "node --env-file-if-exists=.env scripts/catalog-compare.ts",
+    "test:catalog": "node --test app/services/catalog/*.test.ts",
     "sessions:encrypt":"node --env-file-if-exists=.env scripts/encrypt-sessions.ts"
   },
   "type": "module",

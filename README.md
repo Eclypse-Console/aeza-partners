@@ -36,6 +36,8 @@ and not deleted.
 | `MAIN_BACKEND_API_KEY` | Bearer token the main Aeza backend sends to `POST /api/orders`. Long random string. |
 | `CRON_SECRET` | Vercel sends it as a Bearer token to the cron route. Long random string. |
 | `AEZA_SYNC_MODE` | `off` (default, no-op) or `log` (logs every catalog change it would send to Aeza). |
+| `CATALOG_SYNC` | `on` runs the catalog pipeline by itself (full run after each full sync, incremental on product webhooks / stock / publish choices) into `CatalogProduct`. Anything else: off. |
+| `PRODUCTS_DB` | The main products database (legacy `products` table), read by the catalog pipeline to keep each product's id and AI work. Required when `CATALOG_SYNC=on`; without it the pipeline stays off. |
 | `BACKEND_EVENTS_URL` | Main Aeza backend's `https://<api host>/api/webhooks/connector`; order events (shipped, delivered, cancelled) for Aeza orders are forwarded there. |
 | `CONNECTOR_EVENTS_SECRET` | Shared with the backend; signs those forwarded events (`openssl rand -hex 32`). |
 

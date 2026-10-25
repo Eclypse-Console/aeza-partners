@@ -73,6 +73,16 @@ model ShopifyStore {
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
+  // Catalog pipeline (app/services/catalog/auto-sync.server.ts). The legacy
+  // brand is found by handle on the first full run and reused afterwards;
+  // catalogSyncingSince is a per-store lock so two runs never overlap.
+  legacyBrandId          String?
+  legacyBrandName        String?
+  catalogSyncingSince    DateTime?
+  catalogSyncRequestedAt DateTime?
+  lastCatalogSyncAt      DateTime?
+  catalogSyncError       String?
+
   @@schema("shopify_connector")
 }
 
@@ -185,5 +195,201 @@ model WebhookEvent {
   error       String?
 
   @@index([shop, topic])
+  @@schema("shopify_connector")
+}
+
+// ---------------------------------------------------------------------------
+// Aeza catalog: Shopify facts merged with the AI work from the legacy
+// products table (main products database). See app/services/catalog/.
+// ---------------------------------------------------------------------------
+
+// One row per Shopify product per colour (the same grain as the legacy
+// products table). A matched row keeps the legacy row's id, so ghost images,
+// interactions and size charts that point at that id keep working.
+// Column names are snake_case on purpose: rows are published 1:1 to the
+// products-shaped catalog_products table and read by the Python enrichment
+// code, which both use the legacy column names.
+model CatalogProduct {
+  id                             String                       @id @db.Uuid
+  variant_id                     String                       @db.Uuid // shared by every colour of one product
+  shop                           String
+  shopify_product_id             String?
+  color_key                      String                       @default("") // "" unless the product is split by colour
+  source                         String // shopify | legacy_only
+  legacy_product_id              String?                      @db.Uuid
+  sku_id                         String?
+  handle                         String?
+  title                          String?
+  brand_id                       String?
+  brand                          String?
+  product_category               String?
+  product_type                   String?
+  description                    String?
+  ai_description                 String?
+  tags                           String[]                     @default([])
+  images                         Json                         @default("[]")
+  variants                       Json                         @default("[]")
+  price                          Decimal?                     @db.Decimal(12, 2)
+  stock                          Int?
+  gender                         String?
+  sizes                          String[]                     @default([])
+  primary_colors                 String[]                     @default([])
+  color_family                   String[]                     @default([])
+  color_hex                      String[]                     @default([])
+  fabric                         String[]                     @default([])
+  fabric_category                String?
+  fit                            String?
+  fit_type                       String?
+  neckline                       String?
+  sleeve_length_type             String?
+  top_length_type                String?
+  skirt_dress_length_type        String?
+  pants_length_type              String?
+  waist_rise                     String?
+  outerwear_features             String[]                     @default([])
+  occasion                       String[]                     @default([])
+  activity                       String[]                     @default([])
+  season                         String[]                     @default([])
+  aesthetic                      String[]                     @default([])
+  trend_alignment                String?
+  luxury_level                   Int?
+  discounted                     Boolean?
+  pairs_well_with                String[]                     @default([])
+  avoid_pairing_with             String[]                     @default([])
+  layering_role                  String?
+  breathability                  String[]                     @default([])
+  primary_image                  String?
+  embedding_text                 String?
+  multimodal_product_embeddings  Unsupported("vector(1536)")?
+  last_vectorized_at             DateTime?
+  data_version                   String?
+  ingested_at                    DateTime?
+  created_at                     DateTime                     @default(now())
+  updated_at                     DateTime                     @default(now())
+  embedding_model                String?
+  embedding_status               String?
+  is_active                      Boolean                      @default(false)
+  deleted_at                     DateTime?
+  collection_name                String?
+  min_price                      Decimal?                     @db.Decimal(12, 2)
+  max_price                      Decimal?                     @db.Decimal(12, 2)
+  analysis_status                String                       @default("pending")
+  ghost_status                   String                       @default("pending")
+  body_part_tag                  String?
+  product_image_siglip_embedding Unsupported("vector(768)")?
+  product_image_siglip_url       String?
+  product_image_siglip_model     String?
+  product_image_siglip_at        DateTime?                    @db.Timestamptz(6)
+  base_color                     String[]                     @default([])
+  // Catalog-only columns
+  live_on_aeza                   Boolean                      @default(false) // published + ACTIVE + not deleted
+  is_available                   Boolean                      @default(false) // live and at least one size can be bought
+  sizes_in_stock                 String[]                     @default([])
+  compare_at_price               Decimal?                     @db.Decimal(12, 2)
+  shopify_status                 String?
+  shopify_category               String?
+  shopify_tags                   String[]                     @default([])
+  product_info                   String? // the brand's own attribute text (custom.product_info)
+  rating                         Decimal?                     @db.Decimal(3, 2)
+  rating_count                   Int?
+  linked_product_ids             String[]                     @default([])
+  online_store_url               String?
+  collections                    Json                         @default("[]")
+  field_sources                  Json                         @default("{}") // field -> shopify | legacy | sibling | ai | derived
+  text_hash                      String?
+  image_hash                     String?
+  synced_at                      DateTime?
+  catalogVariants                CatalogVariant[]
+  enrichmentJobs                 EnrichmentJob[]
+
+  @@unique([shop, shopify_product_id, color_key])
+  @@index([shop, live_on_aeza])
+  @@index([handle])
+  @@schema("shopify_connector")
+}
+
+// One row per size of a catalog product.
+model CatalogVariant {
+  variantId        String         @id // Shopify GID
+  catalogProductId String         @db.Uuid
+  catalogProduct   CatalogProduct @relation(fields: [catalogProductId], references: [id], onDelete: Cascade)
+  shop             String
+  sku              String?
+  size             String?
+  options          Json           @default("{}")
+  position         Int?
+  price            Decimal        @db.Decimal(12, 2)
+  compareAtPrice   Decimal?       @db.Decimal(12, 2)
+  availableQty     Int            @default(0)
+  inventoryPolicy  String? // DENY | CONTINUE
+  tracked          Boolean        @default(true)
+  available        Boolean        @default(false) // can be bought now
+  updatedAt        DateTime       @updatedAt
+
+  @@index([catalogProductId])
+  @@index([shop, sku])
+  @@schema("shopify_connector")
+}
+
+// How each catalog slot (Shopify product + colour) was matched to the legacy
+// products table. Rows with reviewedAt set are decisions made by a person and
+// are never changed by a re-run.
+model CatalogProductLink {
+  id                 Int       @id @default(autoincrement())
+  shop               String
+  shopifyProductId   String
+  colorKey           String    @default("")
+  legacyProductId    String?   @db.Uuid // the legacy row this slot keeps (its id is reused)
+  duplicateLegacyIds String[]  @default([]) @db.Uuid // other legacy rows for the same slot, kept but unused
+  status             String // auto | new | needs_review
+  method             String? // handle+sku | handle | handle+colour | colour_sibling | duplicate | new
+  confidence         Float?
+  reason             String?
+  candidates         Json      @default("[]")
+  reviewedBy         String?
+  reviewedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([shop, shopifyProductId, colorKey])
+  @@index([status])
+  @@schema("shopify_connector")
+}
+
+// Shopify metaobjects behind attribute metafields (fabric, colour, fit, ...),
+// fetched once and shared by every product that references them.
+model MetaobjectValue {
+  id         String   @id // Metaobject GID
+  shop       String
+  type       String
+  handle     String?
+  label      String?
+  hex        String? // colour swatch, for shopify--color-pattern entries
+  taxonomyId String?
+  fields     Json     @default("{}")
+  fetchedAt  DateTime @default(now())
+
+  @@index([shop])
+  @@schema("shopify_connector")
+}
+
+// Enrichment work per catalog product and step. `inputHash` is what the
+// step's result depends on, so unchanged inputs never re-run a paid step.
+model EnrichmentJob {
+  id               Int            @id @default(autoincrement())
+  catalogProductId String         @db.Uuid
+  catalogProduct   CatalogProduct @relation(fields: [catalogProductId], references: [id], onDelete: Cascade)
+  step             String // text_attributes | body_part_tag | text_embedding | color | image_embedding
+  mode             String         @default("fill") // fill (empty fields only) | refresh (redo AI-owned fields)
+  status           String         @default("pending") // pending | processing | done | failed | skipped
+  reason           String?
+  inputHash        String?
+  attempts         Int            @default(0)
+  error            String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([catalogProductId, step])
+  @@index([status, step])
   @@schema("shopify_connector")
 }
