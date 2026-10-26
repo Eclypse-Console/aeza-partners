@@ -43,6 +43,21 @@ export function adminGraphql(admin: AdminGraphqlClient): GraphqlRequest {
   return <T>(query: string, variables: Record<string, unknown> = {}) => runAdminQuery<T>(admin, query, variables);
 }
 
+// Don't start another full Shopify sync within this long of the last one.
+const REFILL_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Starts a full Shopify sync when the mirror lacks published products; its
+ * import ends with a full catalog run that builds them. At most once an
+ * hour, so a product the export can't return doesn't cause a loop.
+ */
+async function refillMirror(admin: AdminGraphqlClient, shop: string): Promise<void> {
+  const store = await prisma.shopifyStore.findUnique({ where: { shop }, select: { lastFullSyncAt: true } });
+  if (store?.lastFullSyncAt && Date.now() - store.lastFullSyncAt.getTime() < REFILL_INTERVAL_MS) return;
+  const { startFullProductSync } = await import("../product-sync.server");
+  await startFullProductSync(admin, shop);
+}
+
 async function claim(shop: string): Promise<Date | null> {
   const now = new Date();
   const { count } = await prisma.shopifyStore.updateMany({
@@ -69,14 +84,24 @@ export async function syncCatalog(shop: string, productIds?: string[]): Promise<
     }
     try {
       const { admin } = await unauthenticated.admin(shop);
-      const { plan } = await runCatalogSync({ ops: prisma, legacy: legacyDb(), shop, graphql: adminGraphql(admin), productIds: ids });
+      const { plan, missingFromMirror } = await runCatalogSync({
+        ops: prisma,
+        legacy: legacyDb(),
+        shop,
+        graphql: adminGraphql(admin),
+        productIds: ids,
+      });
+      const missing = missingFromMirror
+        ? `${missingFromMirror} published products aren't in full_ShopifyProducts yet`
+        : null;
       await prisma.shopifyStore.update({
         where: { shop },
-        data: { lastCatalogSyncAt: new Date(), catalogSyncError: null },
+        data: { lastCatalogSyncAt: new Date(), catalogSyncError: missing },
       });
       console.log(
-        `[catalog] ${shop}: ${ids ? `${ids.length} products` : "full run"}, ${plan.rows.length} rows, ${plan.jobs.length} enrichment jobs`,
+        `[catalog] ${shop}: ${ids ? `${ids.length} products` : "full run"}, ${plan.rows.length} rows, ${plan.deletes.length} removed, ${plan.jobs.length} enrichment jobs${missing ? `; ${missing}` : ""}`,
       );
+      if (missing) await refillMirror(admin, shop);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[catalog] ${shop}: run failed: ${message}`);

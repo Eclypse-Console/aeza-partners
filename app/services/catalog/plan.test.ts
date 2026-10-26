@@ -155,15 +155,12 @@ test("handle + SKU match is confirmed", () => {
   assert.equal(result.rows[0].id, old.id);
 });
 
-test("handle matches but SKUs point elsewhere: sent to review, legacy row keeps serving", () => {
+test("handle matches but SKUs point elsewhere: sent to review, nothing stored until decided", () => {
   const old = legacy({ handle: "top-2816", variants: [{ sku: "PEACH-1" }] });
   const p = product({ handle: "top-2816", variants: [variant({ sku: "PINK-1" })] });
   const result = plan({ shopifyProducts: [p], legacyRows: [old] });
   assert.equal(result.links[0].status, "needs_review");
-  const kept = result.rows.find((r) => r.id === old.id)!;
-  assert.equal(kept.source, "legacy_only");
-  assert.equal(kept.is_active, true);
-  assert.equal(result.rows.filter((r) => r.source === "shopify").length, 0);
+  assert.equal(result.rows.length, 0);
 });
 
 test("SKUs shared by two Shopify products don't cross-link them", () => {
@@ -194,16 +191,14 @@ test("new product gets a new id and the full enrichment set", () => {
   assert.equal(row.brand, "Test Brand");
 });
 
-test("duplicate legacy rows: the most complete one is kept, the other kept hidden", () => {
+test("duplicate legacy rows: the most complete one is used, the other only recorded on the link", () => {
   const rich = legacy({ handle: "dup" });
   const poor = legacy({ handle: "dup", ai_description: null, multimodal_product_embeddings: null, product_image_siglip_embedding: null, ghost_status: "pending" });
   const p = product({ handle: "dup" });
   const result = plan({ shopifyProducts: [p], legacyRows: [poor, rich] });
   assert.equal(result.links[0].legacyProductId, rich.id);
   assert.deepEqual(result.links[0].duplicateLegacyIds, [poor.id]);
-  const hidden = result.rows.find((r) => r.id === poor.id)!;
-  assert.equal(hidden.source, "legacy_only");
-  assert.equal(hidden.is_active, false);
+  assert.deepEqual(result.rows.map((r) => r.id), [rich.id]);
 });
 
 test("duplicates with different colours but no colour option in Shopify go to review", () => {
@@ -211,7 +206,7 @@ test("duplicates with different colours but no colour option in Shopify go to re
   const blue = legacy({ handle: "bd-412", primary_colors: ["Blue"] });
   const result = plan({ shopifyProducts: [product({ handle: "bd-412" })], legacyRows: [red, blue] });
   assert.equal(result.links[0].status, "needs_review");
-  assert.ok(result.rows.every((r) => r.source === "legacy_only" && r.is_active));
+  assert.equal(result.rows.length, 0);
 });
 
 test("an incremental run keeps a linked product's link and id without the legacy rows", () => {
@@ -299,14 +294,53 @@ test("colour without variant images falls back to all media and says so", () => 
 
 // ------------------------------------------------------- live and stock ---
 
-test("draft, unlisted, unpublished and deleted products are not live and queue no AI", () => {
+test("only published active and draft products are stored; drafts aren't live but are enriched", () => {
   const draft = product({ status: "DRAFT" });
   const unlisted = product({ status: "UNLISTED" });
+  const archived = product({ status: "ARCHIVED" });
   const unpublished = product({ published: false });
   const deleted = product({ deletedAt: new Date() });
-  const result = plan({ shopifyProducts: [draft, unlisted, unpublished, deleted] });
-  assert.ok(result.rows.every((r) => !r.live_on_aeza && !r.is_active));
-  assert.equal(result.jobs.length, 0);
+  const live = product();
+  const result = plan({ shopifyProducts: [draft, unlisted, archived, unpublished, deleted, live] });
+  assert.deepEqual(result.rows.map((r) => r.shopify_product_id).sort(), [draft.productId, live.productId].sort());
+  const draftRow = result.rows.find((r) => r.shopify_product_id === draft.productId)!;
+  const liveRow = result.rows.find((r) => r.shopify_product_id === live.productId)!;
+  assert.equal(draftRow.live_on_aeza, false);
+  assert.equal(draftRow.is_active, false);
+  assert.equal(draftRow.is_available, false, "a draft can't be bought");
+  assert.equal(liveRow.live_on_aeza, true);
+  assert.ok(result.jobs.some((j) => j.catalogProductId === draftRow.id), "drafts are enriched ahead of going live");
+});
+
+test("a draft that gets activated becomes live without being rebuilt", () => {
+  const draft = product({ status: "DRAFT" });
+  const first = plan({ shopifyProducts: [draft] });
+  const second = plan({ shopifyProducts: [{ ...draft, status: "ACTIVE" }], existingRows: first.rows });
+  assert.equal(second.rows[0].id, first.rows[0].id);
+  assert.equal(second.rows[0].live_on_aeza, true);
+  assert.deepEqual(second.deletes, []);
+});
+
+test("a product that gets unpublished is removed from the catalog", () => {
+  const p = product();
+  const first = plan({ shopifyProducts: [p] });
+  const second = plan({ shopifyProducts: [{ ...p, published: false }], existingRows: first.rows });
+  assert.equal(second.rows.length, 0);
+  assert.deepEqual(second.deletes, [first.rows[0].id]);
+});
+
+test("a colour the product no longer sells is removed", () => {
+  const colours = (values: string[]) => product({
+    productId: "gid://shopify/Product/colours",
+    handle: "two-colours",
+    options: [{ name: "Size", values: ["S"] }, { name: "Color", values }],
+    variants: values.map((colour) => variant({ colour, images: [`${CDN}${colour}.jpg?v=1`] })),
+  });
+  const first = plan({ shopifyProducts: [colours(["Red", "Blue"])] });
+  const blue = first.rows.find((r) => r.color_key === "blue")!;
+  const second = plan({ shopifyProducts: [colours(["Red", "Green"])], existingRows: first.rows });
+  assert.deepEqual(second.deletes, [blue.id]);
+  assert.deepEqual(second.rows.map((r) => r.color_key).sort(), ["green", "red"]);
 });
 
 test("sold out everywhere: live but not available", () => {
@@ -327,20 +361,22 @@ test("untracked stock and sell-when-out-of-stock count as available", () => {
   assert.deepEqual(plan({ shopifyProducts: [p] }).rows[0].sizes_in_stock, ["S", "M"]);
 });
 
-test("a product removed from Shopify is hidden but kept", () => {
+test("a product gone from Shopify is removed only when the live sync says so", () => {
   const existing = legacy({ handle: "gone", shopify_product_id: "gid://shopify/Product/999", color_key: "" });
-  const result = plan({ existingRows: [existing] });
-  assert.equal(result.rows[0].id, existing.id);
-  assert.equal(result.rows[0].is_active, false);
-  assert.equal(result.rows[0].shopify_status, "DELETED");
+  const kept = plan({ existingRows: [existing] });
+  assert.deepEqual(kept.deletes, [], "missing from the mirror alone isn't enough");
+  assert.equal(kept.rows.length, 0, "and the row isn't rewritten either");
+  const removed = plan({ existingRows: [existing], removedProductIds: new Set(["gid://shopify/Product/999"]) });
+  assert.deepEqual(removed.deletes, [existing.id]);
 });
 
-test("legacy rows with no Shopify product are kept hidden", () => {
+test("legacy rows with no Shopify product aren't stored, and old legacy-only rows are removed", () => {
   const orphan = legacy({ handle: "discontinued" });
-  const result = plan({ legacyRows: [orphan] });
-  assert.equal(result.rows[0].id, orphan.id);
-  assert.equal(result.rows[0].source, "legacy_only");
-  assert.equal(result.rows[0].is_active, false);
+  const oldLegacyOnly = legacy({ handle: "old", shopify_product_id: null, source: "legacy_only" });
+  const result = plan({ legacyRows: [orphan], existingRows: [oldLegacyOnly] });
+  assert.equal(result.rows.length, 0);
+  assert.deepEqual(result.deletes, [oldLegacyOnly.id]);
+  assert.ok(result.notes.some((n) => /1 legacy rows have no published Shopify product/.test(n.note)));
 });
 
 // ------------------------------------------------------- re-runs / jobs ---

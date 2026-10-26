@@ -4,6 +4,12 @@
 // caller loads the inputs and writes the outputs (see sync.server.ts), which
 // keeps every rule testable without a database (see plan.test.ts).
 //
+// The catalog holds only products the brand published to Aeza that are
+// ACTIVE or DRAFT in Shopify and not deleted (drafts: stored and enriched,
+// live_on_aeza / is_active false until they're activated). A legacy row is
+// used only to carry its id and AI work into a matching Shopify product;
+// legacy rows without one aren't stored.
+//
 // Field owners:
 //   Shopify   title, description, handle, images, prices, sizes, stock,
 //             status, tags (kept separately), collections, URL
@@ -96,6 +102,12 @@ export type PlanInput = {
   knownCategories: ReadonlySet<string>;
   /** Legacy row id -> how much depends on it (interactions, ghost images, ...). */
   legacyUsage?: Map<string, number>;
+  /**
+   * Shopify products the live sync knows are deleted or unpublished but that
+   * aren't in shopifyProducts (e.g. no longer in the mirror): their catalog
+   * rows are removed.
+   */
+  removedProductIds?: Set<string>;
   now?: Date;
 };
 
@@ -146,6 +158,8 @@ export type PlanResult = {
   variants: CatalogVariantRow[];
   links: LinkRow[];
   jobs: JobRow[];
+  /** Catalog row ids to delete (their sizes and jobs go with them). */
+  deletes: string[];
   notes: Array<{ handle: string | null; colorKey: string; note: string }>;
 };
 
@@ -643,7 +657,7 @@ function buildRow(
   setField(row, sources, "stock", ordered.reduce((sum, v) => sum + Math.max(v.inventoryQuantity ?? 0, 0), 0), "shopify");
   setField(row, sources, "sizes_in_stock", inStock, "shopify");
 
-  const live = product.published && product.status === "ACTIVE" && !product.deletedAt;
+  const live = isLiveProduct(product);
   row.live_on_aeza = live;
   row.is_active = live;
   row.is_available = live && inStock.length > 0;
@@ -738,7 +752,8 @@ function buildRow(
 // -------------------------------------------------------------------- jobs ---
 
 function plannedJobs(row: ProductRow, base: ProductRow | null, baseKind: string | null, existingJobs: Map<string, JobInput>): JobRow[] {
-  if (!row.live_on_aeza || !row.primary_image) return [];
+  // Every catalog row is published (drafts too, so they're ready when they go live).
+  if (!row.primary_image) return [];
   const jobs: JobRow[] = [];
   const add = (step: JobRow["step"], mode: JobRow["mode"], reason: string, inputHash: string) => {
     const existing = existingJobs.get(`${row.id}|${step}`);
@@ -794,9 +809,21 @@ export function planCatalog(input: PlanInput): PlanResult {
   const shopifyHandles = new Set(input.shopifyProducts.map((p) => norm(p.handle)));
 
   const claimed = new Set<string>();
-  const result: PlanResult = { rows: [], variants: [], links: [], jobs: [], notes: [] };
+  const result: PlanResult = { rows: [], variants: [], links: [], jobs: [], deletes: [], notes: [] };
+  const existingOf = (productId: string) => input.existingRows.filter((r) => r.shopify_product_id === productId);
+  const remove = (row: ProductRow, why: string) => {
+    result.deletes.push(row.id);
+    result.notes.push({ handle: row.handle ?? null, colorKey: row.color_key ?? "", note: `removed from the catalog (${why})` });
+  };
 
   for (const product of input.shopifyProducts) {
+    // Only published products (active or draft, not deleted) are in the catalog.
+    if (!inCatalog(product)) {
+      existingOf(product.productId).forEach((row) =>
+        remove(row, product.deletedAt ? "deleted in Shopify" : !product.published ? "unpublished" : `status ${product.status}`),
+      );
+      continue;
+    }
     const groups = groupsOf(product);
     const slots = matchProduct(product, groups, byHandle, byTitle, shopifyHandles, existingLinks, input.legacyUsage, claimed, settledSlots);
 
@@ -835,65 +862,51 @@ export function planCatalog(input: PlanInput): PlanResult {
       result.variants.push(...variants);
       result.jobs.push(...plannedJobs(row, base, baseKind, existingJobs));
       notes.forEach((note) => result.notes.push({ handle: product.handle, colorKey: slot.group.colorKey, note }));
-      if (!row.live_on_aeza) result.notes.push({ handle: product.handle, colorKey: slot.group.colorKey, note: `not live on Aeza (${row.shopify_status}${product.published ? "" : ", not published"}); no enrichment queued` });
       productRows.push(row);
     }
+
+    // A colour the product no longer has (or one now waiting for review).
+    const built = new Set(productRows.map((r) => r.id));
+    existingOf(product.productId)
+      .filter((row) => !built.has(row.id))
+      .forEach((row) => remove(row, `colour "${row.color_key}" no longer sold, or waiting for review`));
   }
 
-  // Catalog rows whose Shopify product is gone (deleted, or the export no
-  // longer has it): kept for history, hidden from Aeza.
+  // Rows of products that aren't in this run's input: removed only when the
+  // live sync says they're gone or unpublished (removedProductIds), never
+  // because the mirror happens to lack them. Rows from before this rule
+  // that came from the legacy table alone are removed too.
   const seenProducts = new Set(input.shopifyProducts.map((p) => p.productId));
   for (const existing of input.existingRows) {
-    if (!existing.shopify_product_id || seenProducts.has(existing.shopify_product_id)) continue;
-    result.rows.push({
-      ...existing,
-      is_active: false,
-      live_on_aeza: false,
-      is_available: false,
-      sizes_in_stock: [],
-      shopify_status: "DELETED",
-      deleted_at: existing.deleted_at ?? now,
-      synced_at: now,
-      updated_at: now,
-    });
-    result.notes.push({ handle: existing.handle ?? null, colorKey: existing.color_key ?? "", note: "Shopify product no longer exists; hidden" });
+    if (!existing.shopify_product_id) {
+      remove(existing, "not a Shopify product");
+    } else if (!seenProducts.has(existing.shopify_product_id) && input.removedProductIds?.has(existing.shopify_product_id)) {
+      remove(existing, "deleted or unpublished in Shopify");
+    }
   }
 
-  // Legacy rows no Shopify product took: kept with their ids so nothing that
-  // points at them breaks. Rows waiting for review keep serving as they are;
-  // the rest (removed from the store, or duplicates) are hidden.
-  const underReview = new Set(result.links.filter((l) => l.status === "needs_review").flatMap((l) => l.candidates.map((c) => c.id)));
-  const duplicates = new Set(result.links.flatMap((l) => l.duplicateLegacyIds));
-  const builtIds = new Set(result.rows.map((r) => r.id));
-  for (const legacy of input.legacyRows) {
-    if (builtIds.has(legacy.id) || (claimed.has(legacy.id) && !duplicates.has(legacy.id))) continue;
-    const existing = existingById.get(legacy.id);
-    const row: ProductRow = { ...(existing ?? legacy) };
-    for (const field of ["neckline", "sleeve_length_type", "top_length_type", "skirt_dress_length_type", "pants_length_type", "waist_rise", "fit_type"]) {
-      if (typeof row[field] === "string") row[field] = cleanLegacyScalar(row[field], field);
-    }
-    row.shop = input.shop;
-    row.shopify_product_id = null;
-    row.color_key = "";
-    row.source = "legacy_only";
-    if (!isRealSku(row.sku_id)) row.sku_id = null;
-    if (Array.isArray(row.variants)) {
-      row.variants = (row.variants as Array<Record<string, unknown>>).map(({ sku, ...rest }) =>
-        isRealSku(sku) ? { sku, ...rest } : rest,
-      );
-    }
-    row.legacy_product_id = legacy.id;
-    const keepServing = underReview.has(legacy.id);
-    row.is_active = keepServing ? legacy.is_active !== false : false;
-    row.live_on_aeza = row.is_active;
-    row.is_available = row.is_active && (legacy.stock ?? 0) > 0;
-    row.sizes_in_stock = [];
-    row.field_sources = existing?.field_sources ?? {};
-    row.synced_at = now;
-    result.rows.push(row);
-    const why = duplicates.has(legacy.id) ? "duplicate of another legacy row" : keepServing ? "waiting for review" : "not in the Shopify store";
-    result.notes.push({ handle: legacy.handle ?? null, colorKey: "", note: `legacy row kept as legacy_only (${why})` });
+  // Legacy rows without a published Shopify product aren't stored; matched
+  // ones (and their duplicates) live on through the catalog row's id.
+  const unmatched = input.legacyRows.filter((r) => !claimed.has(r.id)).length;
+  if (unmatched) {
+    result.notes.push({ handle: null, colorKey: "", note: `${unmatched} legacy rows have no published Shopify product; not stored` });
   }
 
   return result;
+}
+
+type ProductState = Pick<ShopifyProductInput, "published" | "status" | "deletedAt">;
+
+// Shopify statuses a published product may have to be in the catalog.
+// Drafts are included for now (stored and enriched, but not buyable).
+const CATALOG_STATUSES = new Set(["ACTIVE", "DRAFT"]);
+
+/** In the catalog: the brand published it, it's active or a draft, and not deleted. */
+export function inCatalog(product: ProductState): boolean {
+  return product.published && CATALOG_STATUSES.has(product.status ?? "") && !product.deletedAt;
+}
+
+/** Live on Aeza (can be shown and bought): in the catalog and ACTIVE in Shopify. */
+export function isLiveProduct(product: ProductState): boolean {
+  return inCatalog(product) && product.status === "ACTIVE";
 }

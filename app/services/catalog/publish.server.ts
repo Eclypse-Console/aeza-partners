@@ -23,7 +23,10 @@ export async function ensurePublishedTable(legacy: PrismaClient): Promise<void> 
   await legacy.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS catalog_products_shop_idx ON catalog_products (shop)`);
 }
 
-/** Copies every catalog row of one shop to catalog_products; returns how many. */
+/**
+ * Makes catalog_products match the shop's catalog: copies every row and
+ * removes rows the catalog no longer has. Returns how many were copied.
+ */
 export async function publishShop(ops: PrismaClient, legacy: PrismaClient, shop: string): Promise<number> {
   await ensurePublishedTable(legacy);
   const rows = await ops.$queryRawUnsafe<Array<Record<string, unknown>>>(
@@ -34,5 +37,10 @@ export async function publishShop(ops: PrismaClient, legacy: PrismaClient, shop:
     const { sql, params } = upsertSql("catalog_products", PUBLISHED_COLUMNS, rows.slice(start, start + BATCH), { applyDefaults: false });
     await legacy.$executeRawUnsafe(sql, ...params);
   }
+  await legacy.$executeRawUnsafe(
+    `DELETE FROM catalog_products WHERE shop = $1 AND NOT (id = ANY($2::uuid[]))`,
+    shop,
+    rows.map((row) => row.id as string),
+  );
   return rows.length;
 }

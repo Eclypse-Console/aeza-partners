@@ -10,6 +10,8 @@ import { CATALOG_COLUMNS, PRODUCT_COLUMNS, selectList, upsertSql } from "./colum
 import type { JobInput, LinkInput, MetaobjectInput, PlanResult, ProductRow, ShopifyProductInput } from "./plan.ts";
 
 const BATCH = 50;
+// Links / jobs per statement (small rows, so bigger batches).
+const BULK_BATCH = 500;
 
 // The catalog migration installed pgvector into the connector's own schema,
 // leaving the shared public schema of aeza-ops untouched.
@@ -137,11 +139,11 @@ export async function resolveMetaobjects(
     const batch = missing.slice(start, start + 250);
     const nodes = await fetchNodes(batch);
     unresolved += nodes.filter((n) => !n).length;
-    for (const node of nodes) {
-      if (!node) continue;
+    const entries = nodes.flatMap((node) => {
+      if (!node) return [];
       const fields = Object.fromEntries(node.fields.map((f) => [f.key, f.value]));
       const taxonomy = fields.taxonomy_reference ?? fields.pattern_taxonomy_reference ?? null;
-      const entry = {
+      return [{
         id: node.id,
         shop,
         type: node.type,
@@ -150,10 +152,10 @@ export async function resolveMetaobjects(
         hex: fields.color ?? null,
         taxonomyId: typeof taxonomy === "string" ? taxonomy.replace(/^\["?|"?\]$/g, "") : null,
         fields,
-      };
-      await ops.metaobjectValue.upsert({ where: { id: node.id }, create: entry, update: { ...entry, fetchedAt: new Date() } });
-      values.set(node.id, { id: node.id, type: node.type, label: entry.label, hex: entry.hex });
-    }
+      }];
+    });
+    await ops.metaobjectValue.createMany({ data: entries, skipDuplicates: true });
+    for (const entry of entries) values.set(entry.id, { id: entry.id, type: entry.type, label: entry.label, hex: entry.hex });
   }
   return { values, unresolved };
 }
@@ -249,8 +251,12 @@ export async function loadExisting(ops: PrismaClient, shop: string, productIds?:
   };
 }
 
-/** Writes rows, sizes, links and jobs. Jobs already running are left alone. */
+/** Writes rows, sizes, links and jobs, and deletes removed rows. Jobs already running are left alone. */
 export async function writePlan(ops: PrismaClient, shop: string, plan: PlanResult): Promise<void> {
+  if (plan.deletes.length) {
+    // Sizes and jobs go with the row (ON DELETE CASCADE).
+    await ops.catalogProduct.deleteMany({ where: { shop, id: { in: plan.deletes } } });
+  }
   for (let start = 0; start < plan.rows.length; start += BATCH) {
     const { sql, params } = upsertSql(`shopify_connector."CatalogProduct"`, CATALOG_COLUMNS, plan.rows.slice(start, start + BATCH), {
       vectorType: OPS_VECTOR_TYPE,
@@ -264,33 +270,56 @@ export async function writePlan(ops: PrismaClient, shop: string, plan: PlanResul
     ops.catalogVariant.createMany({ data: plan.variants }),
   ]);
 
-  for (const link of plan.links) {
-    if (link.reviewed || link.unchanged) continue;
-    const data = {
-      legacyProductId: link.legacyProductId,
-      duplicateLegacyIds: link.duplicateLegacyIds,
-      status: link.status,
-      method: link.method,
-      confidence: link.confidence,
-      reason: link.reason,
-      candidates: link.candidates,
-    };
-    await ops.catalogProductLink.upsert({
-      where: { shop_shopifyProductId_colorKey: { shop, shopifyProductId: link.shopifyProductId, colorKey: link.colorKey } },
-      create: { shop, shopifyProductId: link.shopifyProductId, colorKey: link.colorKey, ...data },
-      update: data,
-    });
+  // Links and jobs in one statement per batch: one round trip per row made a
+  // big store's first run outlast the serverless time limit.
+  const links = plan.links.filter((link) => !link.reviewed && !link.unchanged);
+  for (let start = 0; start < links.length; start += BULK_BATCH) {
+    const batch = links.slice(start, start + BULK_BATCH).map((link) => ({ ...link, shop }));
+    await ops.$executeRaw`
+      INSERT INTO shopify_connector."CatalogProductLink" (
+        shop, "shopifyProductId", "colorKey", "legacyProductId", "duplicateLegacyIds",
+        status, method, confidence, reason, candidates, "createdAt", "updatedAt"
+      )
+      SELECT r.shop, r."shopifyProductId", r."colorKey", r."legacyProductId"::uuid,
+             ARRAY(SELECT jsonb_array_elements_text(r."duplicateLegacyIds"))::uuid[],
+             r.status, r.method, r.confidence, r.reason, r.candidates, now(), now()
+        FROM jsonb_to_recordset(${JSON.stringify(batch)}::jsonb) AS r(
+          shop text, "shopifyProductId" text, "colorKey" text, "legacyProductId" text,
+          "duplicateLegacyIds" jsonb, status text, method text, confidence float8,
+          reason text, candidates jsonb
+        )
+      ON CONFLICT (shop, "shopifyProductId", "colorKey") DO UPDATE SET
+        "legacyProductId" = EXCLUDED."legacyProductId",
+        "duplicateLegacyIds" = EXCLUDED."duplicateLegacyIds",
+        status = EXCLUDED.status,
+        method = EXCLUDED.method,
+        confidence = EXCLUDED.confidence,
+        reason = EXCLUDED.reason,
+        candidates = EXCLUDED.candidates,
+        "updatedAt" = now()
+      WHERE "CatalogProductLink"."reviewedAt" IS NULL
+    `;
   }
 
-  for (const job of plan.jobs) {
-    const existing = await ops.enrichmentJob.findUnique({
-      where: { catalogProductId_step: { catalogProductId: job.catalogProductId, step: job.step } },
-    });
-    if (existing?.status === "processing") continue;
-    await ops.enrichmentJob.upsert({
-      where: { catalogProductId_step: { catalogProductId: job.catalogProductId, step: job.step } },
-      create: { ...job, status: "pending" },
-      update: { mode: job.mode, reason: job.reason, inputHash: job.inputHash, status: "pending", attempts: 0, error: null },
-    });
+  for (let start = 0; start < plan.jobs.length; start += BULK_BATCH) {
+    const batch = plan.jobs.slice(start, start + BULK_BATCH);
+    await ops.$executeRaw`
+      INSERT INTO shopify_connector."EnrichmentJob" (
+        "catalogProductId", step, mode, status, reason, "inputHash", attempts, "createdAt", "updatedAt"
+      )
+      SELECT r."catalogProductId"::uuid, r.step, r.mode, 'pending', r.reason, r."inputHash", 0, now(), now()
+        FROM jsonb_to_recordset(${JSON.stringify(batch)}::jsonb) AS r(
+          "catalogProductId" text, step text, mode text, reason text, "inputHash" text
+        )
+      ON CONFLICT ("catalogProductId", step) DO UPDATE SET
+        mode = EXCLUDED.mode,
+        reason = EXCLUDED.reason,
+        "inputHash" = EXCLUDED."inputHash",
+        status = 'pending',
+        attempts = 0,
+        error = NULL,
+        "updatedAt" = now()
+      WHERE "EnrichmentJob".status <> 'processing'
+    `;
   }
 }

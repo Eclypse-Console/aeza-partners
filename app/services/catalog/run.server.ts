@@ -1,15 +1,19 @@
 // One catalog run for one store: Shopify mirror + legacy products -> plan ->
 // CatalogProduct / CatalogVariant / CatalogProductLink / EnrichmentJob.
 //
-// Full run (no productIds): every product of the store, and every legacy row
-// of its brand (unmatched ones are kept as legacy_only). Done after each full
-// Shopify sync.
+// Only published products (active or draft) get catalog rows; legacy rows only lend their
+// id and AI work to a matching Shopify product.
+//
+// Full run (no productIds): every product in the mirror, matched against
+// every legacy row of the brand. Done after each full Shopify sync.
 // Incremental run (productIds): just those products, for webhooks and
 // publish choices. Products already in the catalog keep their link; legacy
 // rows are only loaded for products that aren't in the catalog yet.
+// Either way a row is removed only when the live sync (ShopifyProduct) says
+// its product is deleted or unpublished, never because the mirror lacks it.
 
 import type { PrismaClient } from "@prisma/client";
-import { planCatalog } from "./plan.ts";
+import { inCatalog, planCatalog } from "./plan.ts";
 import type { PlanResult } from "./plan.ts";
 import {
   METAOBJECT_NODES_QUERY,
@@ -44,6 +48,8 @@ export type CatalogRunResult = {
   brand: LegacyBrand | null;
   legacyRows: number;
   products: number;
+  /** Published products the mirror doesn't have yet (full runs only). */
+  missingFromMirror: number;
   metaobjects: { total: number; unresolved: number };
 };
 
@@ -67,8 +73,8 @@ export async function runCatalogSync(options: CatalogRunOptions): Promise<Catalo
   }
 
   // Incremental runs only need legacy rows for products not yet in the catalog.
-  const inCatalog = new Set(existing.rows.map((r) => r.shopify_product_id));
-  const newHandles = full ? undefined : shopifyProducts.filter((p) => !inCatalog.has(p.productId)).map((p) => p.handle);
+  const alreadyInCatalog = new Set(existing.rows.map((r) => r.shopify_product_id));
+  const newHandles = full ? undefined : shopifyProducts.filter((p) => !alreadyInCatalog.has(p.productId)).map((p) => p.handle);
   const legacyRows = brand ? await loadLegacyRows(legacy, brand, newHandles) : [];
   const usage = await loadLegacyUsage(legacy, legacyRows.map((r) => r.id));
 
@@ -76,6 +82,25 @@ export async function runCatalogSync(options: CatalogRunOptions): Promise<Catalo
   const { values: metaobjects, unresolved } = await resolveMetaobjects(ops, shop, ids, async (batch) =>
     (await graphql<{ nodes: MetaobjectNode[] }>(METAOBJECT_NODES_QUERY, { ids: batch })).nodes,
   );
+
+  // Catalog rows whose product isn't in the mirror: the live sync
+  // (ShopifyProduct) decides whether it's really gone or unpublished.
+  const inMirror = new Set(shopifyProducts.map((p) => p.productId));
+  const outside = [...new Set(existing.rows.map((r) => r.shopify_product_id as string | null).filter((id): id is string => !!id && !inMirror.has(id)))];
+  const known = await ops.shopifyProduct.findMany({
+    where: { shop, productId: { in: outside } },
+    select: { productId: true, published: true, status: true, deletedAt: true },
+  });
+  const stillInCatalog = new Set(known.filter((p) => inCatalog(p)).map((p) => p.productId));
+  const removedProductIds = new Set(outside.filter((id) => !stillInCatalog.has(id)));
+
+  // Published products the mirror doesn't have yet can't be built; a full
+  // Shopify sync fills the mirror.
+  const missingFromMirror = full
+    ? await ops.shopifyProduct.count({
+        where: { shop, published: true, status: { in: ["ACTIVE", "DRAFT"] }, deletedAt: null, productId: { notIn: [...inMirror] } },
+      })
+    : 0;
 
   const plan = planCatalog({
     shop,
@@ -88,8 +113,16 @@ export async function runCatalogSync(options: CatalogRunOptions): Promise<Catalo
     metaobjects,
     knownCategories: await loadKnownCategories(legacy),
     legacyUsage: usage,
+    removedProductIds,
   });
 
   if (!dryRun) await writePlan(ops, shop, plan);
-  return { plan, brand, legacyRows: legacyRows.length, products: shopifyProducts.length, metaobjects: { total: ids.length, unresolved } };
+  return {
+    plan,
+    brand,
+    legacyRows: legacyRows.length,
+    products: shopifyProducts.length,
+    missingFromMirror,
+    metaobjects: { total: ids.length, unresolved },
+  };
 }
