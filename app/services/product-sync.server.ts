@@ -2,14 +2,26 @@ import prisma from "../db.server";
 import type { AdminGraphqlClient } from "../models/products.server";
 import { runAdminQuery } from "../models/products.server";
 import { pushProductsToAeza } from "./aeza-catalog.server";
+import { adminGraphql, syncCatalog } from "./catalog/auto-sync.server";
+import {
+  BULK_FULL_PRODUCTS_QUERY,
+  BulkProductAssembler,
+  ensureFullColumns,
+  fetchFullProduct,
+  saveFullProduct,
+} from "./catalog/full-products.server";
+import type { FullProduct } from "./catalog/full-products.server";
 
-// Keeps ShopifyProduct / ShopifyVariant a full copy of each brand's catalog.
+// Keeps ShopifyProduct / ShopifyVariant a full copy of each brand's catalog,
+// and the full mirror (full_ShopifyProducts) with every field the catalog
+// pipeline uses.
 //
 // Full sync (on install and nightly) uses a Shopify Bulk Operation, so even
 // very large catalogs are exported by Shopify in the background instead of
 // paged through inside one request. When it finishes Shopify sends the
 // bulk_operations/finish webhook, which calls processBulkOperation to
-// download the JSONL result and upsert it in batches.
+// download the JSONL result, upsert it in batches, then run the catalog
+// pipeline once for the whole store.
 //
 // Single products (product webhooks) are re-fetched with refreshProduct.
 //
@@ -67,43 +79,20 @@ type VariantNode = {
   inventoryItem: { id: string } | null;
 };
 
-const BULK_PRODUCTS_QUERY = `{
-  products {
-    edges {
-      node {
-        id
-        title
-        handle
-        descriptionHtml
-        vendor
-        productType
-        tags
-        status
-        updatedAt
-        media {
-          edges { node { ... on MediaImage { image { url } } } }
-        }
-        variants {
-          edges {
-            node {
-              id
-              sku
-              title
-              price
-              compareAtPrice
-              inventoryQuantity
-              selectedOptions { name value }
-              inventoryItem { id }
-            }
-          }
-        }
-      }
-    }
-  }
-}`;
-
 // Products upserted per database round trip while importing.
 const IMPORT_BATCH_SIZE = 100;
+
+/** The ShopifyProduct / ShopifyVariant shape of a full mirror product. */
+function fromFullProduct(product: FullProduct): SyncedProduct {
+  const images = (product.media.nodes as Array<{ image?: { url?: string } }>).flatMap((media) =>
+    media.image?.url ? [media.image.url] : [],
+  );
+  return toSyncedProduct(
+    product as unknown as ProductFields,
+    images,
+    product.variants.nodes as unknown as VariantNode[],
+  );
+}
 
 function toSyncedProduct(
   node: ProductFields,
@@ -153,12 +142,14 @@ export async function getPublishMode(shop: string): Promise<PublishMode> {
  * statement covers the whole batch (instead of one query per product), so a
  * large import stays fast even with database latency. `published` is only
  * set on insert, or always in "all" mode; in "selected" mode an existing
- * product keeps the brand's decision.
+ * product keeps the brand's decision. `notify: false` skips the per-batch
+ * catalog update (the bulk import runs the catalog once at the end).
  */
 async function saveProducts(
   shop: string,
   products: SyncedProduct[],
   publishMode: PublishMode,
+  { notify = true }: { notify?: boolean } = {},
 ): Promise<void> {
   if (products.length === 0) return;
 
@@ -227,20 +218,21 @@ async function saveProducts(
     prisma.shopifyVariant.createMany({ data: variants }),
   ]);
 
-  await pushProductsToAeza(shop, productIds);
+  if (notify) await pushProductsToAeza(shop, productIds);
 }
 
 /** Marks products as deleted in Shopify: unpublished and removed from Aeza. */
 export async function markProductsDeleted(
   shop: string,
   productIds: string[],
+  { notify = true }: { notify?: boolean } = {},
 ): Promise<void> {
   if (productIds.length === 0) return;
   await prisma.shopifyProduct.updateMany({
     where: { shop, productId: { in: productIds } },
     data: { deletedAt: new Date(), published: false },
   });
-  await pushProductsToAeza(shop, productIds);
+  if (notify) await pushProductsToAeza(shop, productIds);
 }
 
 /** Starts a full catalog export. The result arrives via bulk_operations/finish. */
@@ -262,7 +254,7 @@ export async function startFullProductSync(
         userErrors { field message }
       }
     }`,
-    { query: BULK_PRODUCTS_QUERY },
+    { query: BULK_FULL_PRODUCTS_QUERY },
   );
 
   const { bulkOperation, userErrors } = data.bulkOperationRunQuery;
@@ -330,6 +322,7 @@ export async function processBulkOperation(
   await markProductsDeleted(
     shop,
     stale.map((product) => product.productId),
+    { notify: false },
   );
 
   await prisma.shopifyStore.update({
@@ -339,12 +332,17 @@ export async function processBulkOperation(
   console.log(
     `[product-sync] ${shop}: imported ${imported} products, marked ${stale.length} deleted`,
   );
+
+  // Every product is in now: one catalog run for the whole store.
+  await syncCatalog(shop);
 }
 
 /**
  * Streams the bulk JSONL file. Shopify writes each product line followed by
- * its children (media, variants) carrying `__parentId`, so a product is
- * complete as soon as the next product line starts; memory stays constant.
+ * its children (media, metafields, collections, variants and their media)
+ * carrying `__parentId`, so a product is complete as soon as the next
+ * product line starts; memory stays constant. Each product goes to the full
+ * mirror and to ShopifyProduct / ShopifyVariant.
  */
 async function importBulkFile(shop: string, url: string): Promise<number> {
   const response = await fetch(url);
@@ -353,41 +351,27 @@ async function importBulkFile(shop: string, url: string): Promise<number> {
   }
 
   const publishMode = await getPublishMode(shop);
-  let batch: SyncedProduct[] = [];
-  let current: SyncedProduct | null = null;
+  await ensureFullColumns(prisma);
+  const assembler = new BulkProductAssembler();
+  let batch: FullProduct[] = [];
   let imported = 0;
 
   const flush = async () => {
-    await saveProducts(shop, batch, publishMode);
+    for (const product of batch) await saveFullProduct(prisma, shop, product);
+    await saveProducts(shop, batch.map(fromFullProduct), publishMode, { notify: false });
     imported += batch.length;
     batch = [];
   };
 
   for await (const line of readLines(response.body)) {
-    const node = JSON.parse(line) as Record<string, unknown> & {
-      __parentId?: string;
-    };
-
-    if (!node.__parentId) {
-      if (current) batch.push(current);
-      if (batch.length >= IMPORT_BATCH_SIZE) await flush();
-      current = toSyncedProduct(node as unknown as ProductFields, [], []);
-      continue;
-    }
-
-    if (!current || node.__parentId !== current.productId) {
-      console.warn(`[product-sync] skipped orphan line for ${node.__parentId}`);
-      continue;
-    }
-    if (typeof node.id === "string" && node.id.includes("/ProductVariant/")) {
-      current.variants.push(toSyncedVariant(node as unknown as VariantNode));
-    } else {
-      const image = node.image as { url?: string } | undefined;
-      if (image?.url) current.images.push(image.url);
-    }
+    const done = assembler.add(JSON.parse(line) as Record<string, unknown> & { __parentId?: string });
+    if (!done) continue;
+    batch.push(done);
+    if (batch.length >= IMPORT_BATCH_SIZE) await flush();
   }
 
-  if (current) batch.push(current);
+  const last = assembler.finish();
+  if (last) batch.push(last);
   await flush();
   return imported;
 }
@@ -419,75 +403,15 @@ export async function refreshProduct(
   shop: string,
   productId: string,
 ): Promise<void> {
-  type ProductPage = {
-    product:
-      | (ProductFields & {
-          media: { nodes: Array<{ image?: { url: string } }> };
-          variants: {
-            nodes: VariantNode[];
-            pageInfo: { hasNextPage: boolean; endCursor: string | null };
-          };
-        })
-      | null;
-  };
-
-  let product: ProductPage["product"] = null;
-  const variants: VariantNode[] = [];
-  let after: string | null = null;
-
-  do {
-    const data: ProductPage = await runAdminQuery<ProductPage>(
-      admin,
-      `#graphql
-      query RefreshProduct($id: ID!, $variantsAfter: String) {
-        product(id: $id) {
-          id
-          title
-          handle
-          descriptionHtml
-          vendor
-          productType
-          tags
-          status
-          updatedAt
-          media(first: 50) { nodes { ... on MediaImage { image { url } } } }
-          variants(first: 250, after: $variantsAfter) {
-            nodes {
-              id
-              sku
-              title
-              price
-              compareAtPrice
-              inventoryQuantity
-              selectedOptions { name value }
-              inventoryItem { id }
-            }
-            pageInfo { hasNextPage endCursor }
-          }
-        }
-      }`,
-      { id: productId, variantsAfter: after },
-    );
-
-    if (!data.product) {
-      await markProductsDeleted(shop, [productId]);
-      return;
-    }
-    product ??= data.product;
-    variants.push(...data.product.variants.nodes);
-    after = data.product.variants.pageInfo.hasNextPage
-      ? data.product.variants.pageInfo.endCursor
-      : null;
-  } while (after);
-
-  const images = product.media.nodes.flatMap((media) =>
-    media.image?.url ? [media.image.url] : [],
-  );
-  await saveProducts(
-    shop,
-    [toSyncedProduct(product, images, variants)],
-    await getPublishMode(shop),
-  );
+  const product = await fetchFullProduct(adminGraphql(admin), productId);
+  if (!product) {
+    await markProductsDeleted(shop, [productId]);
+    return;
+  }
+  // The full mirror first: saveProducts triggers the catalog update, which reads it.
+  await ensureFullColumns(prisma);
+  await saveFullProduct(prisma, shop, product);
+  await saveProducts(shop, [fromFullProduct(product)], await getPublishMode(shop));
 }
 
 /** Re-reads one inventory item's available quantity and stores it. */

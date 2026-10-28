@@ -1,7 +1,10 @@
 import type { ShopifyProduct, ShopifyVariant } from "@prisma/client";
+import { waitUntil } from "@vercel/functions";
 import prisma from "../db.server";
+import { syncCatalog } from "./catalog/auto-sync.server";
 
-// Adapter between our Shopify product copy and the main Aeza catalog.
+// Adapter between our Shopify product copy and the main Aeza catalog. Every
+// change also refreshes the catalog pipeline's rows (catalog/auto-sync).
 // Not wired to the Aeza backend yet: behind AEZA_SYNC_MODE it is either a
 // silent no-op ("off", the default) or logs what it would send ("log").
 // Every product change (sync, webhook, publish decision) goes through
@@ -42,6 +45,10 @@ export async function pushProductsToAeza(
   shop: string,
   productIds: string[],
 ): Promise<void> {
+  // Keep the catalog (CatalogProduct) current for these products, in the
+  // background so a dashboard Save or webhook doesn't wait for it.
+  waitUntil(syncCatalog(shop, productIds));
+
   if (syncMode() === "off" || productIds.length === 0) return;
 
   const products = await prisma.shopifyProduct.findMany({
