@@ -73,7 +73,7 @@ export async function markStoreUninstalled(shop: string): Promise<void> {
 /** Links the store to its BrandProfile once the onboarding form is saved. */
 export async function linkBrandProfile(
   shop: string,
-  brandProfileId: number,
+  brandProfileId: string,
 ): Promise<void> {
   await prisma.shopifyStore.updateMany({
     where: { shop, brandProfileId: null },

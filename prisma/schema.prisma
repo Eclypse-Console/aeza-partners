@@ -38,7 +38,7 @@ model Session {
 }
 
 model BrandProfile {
-  id                Int           @id @default(autoincrement())
+  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shop              String        @unique
   brandName         String
   contactEmail      String
@@ -63,7 +63,7 @@ model ShopifyStore {
   shop            String        @unique
   clientId        String        @unique
   clientSecretEnc String
-  brandProfileId  Int?          @unique
+  brandProfileId  String?       @unique @db.Uuid
   brandProfile    BrandProfile? @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
   status          String        @default("pending") // pending | connected | uninstalled
   publishMode     String        @default("selected") // selected | all
