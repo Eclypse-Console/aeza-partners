@@ -70,7 +70,6 @@ try {
     console.error("Rows by source:", count(plan.rows, (r) => r.source));
     console.error("Live on Aeza:", plan.rows.filter((r) => r.live_on_aeza).length, "| available:", plan.rows.filter((r) => r.is_available).length);
     console.error("Links:", count(plan.links, (l) => `${l.status}/${l.method}`));
-    console.error("Enrichment jobs:", count(plan.jobs, (j) => `${j.step}(${j.mode})`));
     console.error("Removed from the catalog:", plan.deletes.length);
     if (missingFromMirror) {
       console.error(`${missingFromMirror} published products aren't in full_ShopifyProducts yet: run store:full-export or a full sync.`);
@@ -80,7 +79,7 @@ try {
     if (values["dry-run"]) {
       console.error("\nDry run: nothing written.");
     } else {
-      console.error("\nWritten to shopify_connector.CatalogProduct / CatalogVariant / CatalogProductLink / EnrichmentJob.");
+      console.error("\nWritten to shopify_connector.CatalogProduct / CatalogVariant / CatalogProductLink.");
       if (values.publish) {
         const published = await publishShop(ops, legacy, shop);
         console.error(`Published ${published} rows to catalog_products.`);

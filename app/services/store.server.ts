@@ -1,6 +1,7 @@
 import prisma from "../db.server";
 import type { AdminGraphqlClient } from "../models/products.server";
 import { pushProductsToAeza } from "./aeza-catalog.server";
+import { autoOnboardBrandOnInstall } from "./brand-onboarding.server";
 import { startFullProductSync } from "./product-sync.server";
 
 /**
@@ -32,7 +33,14 @@ export async function markStoreConnected(
     },
   });
 
-  // A failed sync kick-off must not break the install; the nightly re-sync
+  // 1. Automatically create Clerk account, store details in DB, and email credentials
+  try {
+    await autoOnboardBrandOnInstall(shop, admin);
+  } catch (error) {
+    console.error(`Failed to auto-onboard brand for ${shop}:`, error);
+  }
+
+  // 2. A failed sync kick-off must not break the install; the nightly re-sync
   // picks the store up again.
   try {
     await startFullProductSync(admin, shop);
@@ -73,7 +81,7 @@ export async function markStoreUninstalled(shop: string): Promise<void> {
 /** Links the store to its BrandProfile once the onboarding form is saved. */
 export async function linkBrandProfile(
   shop: string,
-  brandProfileId: number,
+  brandProfileId: string,
 ): Promise<void> {
   await prisma.shopifyStore.updateMany({
     where: { shop, brandProfileId: null },

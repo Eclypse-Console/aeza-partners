@@ -38,7 +38,7 @@ model Session {
 }
 
 model BrandProfile {
-  id                Int           @id @default(autoincrement())
+  id                String        @id @default(uuid()) @db.Uuid
   shop              String        @unique
   brandName         String
   contactEmail      String
@@ -49,6 +49,7 @@ model BrandProfile {
   consentTimestamp  DateTime?
   status            String        @default("pending_review")
   createdAt         DateTime      @default(now())
+  clerkId           String?       @unique
   store             ShopifyStore?
 
   @@schema("shopify_connector")
@@ -63,7 +64,7 @@ model ShopifyStore {
   shop            String        @unique
   clientId        String        @unique
   clientSecretEnc String
-  brandProfileId  Int?          @unique
+  brandProfileId  String?       @unique @db.Uuid
   brandProfile    BrandProfile? @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
   status          String        @default("pending") // pending | connected | uninstalled
   publishMode     String        @default("selected") // selected | all
@@ -300,7 +301,6 @@ model CatalogProduct {
   image_hash                     String?
   synced_at                      DateTime?
   catalogVariants                CatalogVariant[]
-  enrichmentJobs                 EnrichmentJob[]
 
   @@unique([shop, shopify_product_id, color_key])
   @@index([shop, live_on_aeza])
@@ -373,23 +373,4 @@ model MetaobjectValue {
   @@schema("shopify_connector")
 }
 
-// Enrichment work per catalog product and step. `inputHash` is what the
-// step's result depends on, so unchanged inputs never re-run a paid step.
-model EnrichmentJob {
-  id               Int            @id @default(autoincrement())
-  catalogProductId String         @db.Uuid
-  catalogProduct   CatalogProduct @relation(fields: [catalogProductId], references: [id], onDelete: Cascade)
-  step             String // text_attributes | body_part_tag | text_embedding | color | image_embedding
-  mode             String         @default("fill") // fill (empty fields only) | refresh (redo AI-owned fields)
-  status           String         @default("pending") // pending | processing | done | failed | skipped
-  reason           String?
-  inputHash        String?
-  attempts         Int            @default(0)
-  error            String?
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
 
-  @@unique([catalogProductId, step])
-  @@index([status, step])
-  @@schema("shopify_connector")
-}

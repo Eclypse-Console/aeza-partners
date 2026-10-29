@@ -175,10 +175,56 @@ export function imageIdentity(url: string): string {
   }
 }
 
-const SIZE_ORDER = ["xxxs", "xxs", "xs", "s", "m", "l", "xl", "xxl", "2xl", "xxxl", "3xl", "4xl", "5xl", "free size", "free"];
+const SIZE_ORDER = ["xxxs", "xxs", "xs", "s", "m", "l", "xl", "xxl", "xxxl", "4xl", "5xl", "free size", "free"];
 
-/** Orders sizes the way a shopper reads them (XS, S, M, L, XL), numbers ascending. */
+const JUNK_SIZES = new Set([
+  "na", "n/a", "none", "#n/a", "null", "default title", "default", "title",
+  "triangle", "square", "custom"
+]);
+const ONE_SIZE_TOKENS = new Set([
+  "one size",
+  "one-size",
+  "onesize",
+  "one size only",
+  "os",
+  "free size",
+  "free-size",
+  "freesize",
+  "fs",
+]);
+
+/** Standardizes size labels (2XL -> XXL, 3XL/3.0XL -> XXXL, 2XS -> XXS, ONE SIZE -> FREE SIZE, junk/prices -> null) */
+export function normalizeSizeToken(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const clean = raw.trim();
+  const lower = clean.toLowerCase();
+  if (!clean || JUNK_SIZES.has(lower)) return null;
+
+  // Filter out price denominations (e.g. ₹500, ₹2,000.00, 2000, 5000, 10000)
+  if (/^[₹$€£]|\b\d{4,}\b/.test(clean)) return null;
+
+  let token = clean.toUpperCase();
+  token = token.replace(/3\.0XL/g, "XXXL");
+  token = token.replace(/(?<!\d)3XL\b/g, "XXXL");
+  token = token.replace(/(?<!\d)2XL\b/g, "XXL");
+  token = token.replace(/(?<!\d)2XS\b/g, "XXS");
+
+  if (ONE_SIZE_TOKENS.has(lower) || ONE_SIZE_TOKENS.has(token.toLowerCase())) {
+    token = "FREE SIZE";
+  }
+  return token;
+}
+
+/** Standardizes and orders sizes the way a shopper reads them (XS, S, M, L, XL), numbers ascending. */
 export function sortSizes(sizes: string[]): string[] {
+  const normalizedList: string[] = [];
+  for (const s of sizes) {
+    const norm = normalizeSizeToken(s);
+    if (norm && !normalizedList.includes(norm)) {
+      normalizedList.push(norm);
+    }
+  }
+
   const rank = (size: string) => {
     const lower = size.trim().toLowerCase();
     const index = SIZE_ORDER.indexOf(lower);
@@ -186,5 +232,169 @@ export function sortSizes(sizes: string[]): string[] {
     const number = Number.parseFloat(lower);
     return Number.isFinite(number) ? 100 + number : 1000;
   };
-  return [...sizes].sort((a, b) => rank(a) - rank(b));
+  return normalizedList.sort((a, b) => rank(a) - rank(b));
 }
+
+const CATEGORY_SYNONYMS: Record<string, string> = {
+  pants: "Trousers",
+  polos: "Polo Shirts",
+  tshirts: "T-Shirts",
+  "t-shirt": "T-Shirts",
+  shirt: "Shirts",
+  top: "Tops",
+  dress: "Dresses",
+  skirt: "Skirts",
+  short: "Shorts",
+};
+
+/** Normalizes product category to canonical taxonomy (category_mapper.py). */
+export function normalizeCategory(category: string | null | undefined): string | null {
+  if (!category) return null;
+  const clean = category.trim();
+  const lower = clean.toLowerCase();
+  return CATEGORY_SYNONYMS[lower] ?? clean;
+}
+
+/**
+ * Enforces category field exclusions per Aeza-Product-Enrichment-System category_field_rules.py
+ */
+export function applyCategoryFieldExclusions(row: Record<string, any>): void {
+  const cat = (row.product_category ?? "").trim().toLowerCase();
+  if (!cat) return;
+
+  if (["tops", "top", "shirts", "shirt", "t-shirts", "t-shirt", "polo shirts", "crop tops", "tank tops", "blouses"].includes(cat)) {
+    row.skirt_dress_length_type = null;
+    row.pants_length_type = null;
+    row.waist_rise = null;
+  } else if (["bottoms", "pants", "trousers", "jeans", "shorts", "skirts", "skorts", "leggings"].includes(cat)) {
+    row.neckline = null;
+    row.sleeve_length_type = null;
+    row.top_length_type = null;
+    row.outerwear_features = [];
+    if (["pants", "trousers", "jeans", "shorts", "leggings"].includes(cat)) {
+      row.skirt_dress_length_type = null;
+    }
+  } else if (["dresses", "dress", "gowns"].includes(cat)) {
+    row.pants_length_type = null;
+    row.top_length_type = null;
+  } else if (["outerwear", "jackets", "coats", "blazers"].includes(cat)) {
+    row.skirt_dress_length_type = null;
+    row.pants_length_type = null;
+    row.waist_rise = null;
+  } else if (["accessories", "bags", "bracelets", "footwear", "scarves"].includes(cat)) {
+    row.neckline = null;
+    row.sleeve_length_type = null;
+    row.top_length_type = null;
+    row.skirt_dress_length_type = null;
+    row.pants_length_type = null;
+    row.waist_rise = null;
+    row.outerwear_features = [];
+  }
+}
+
+const ACCESSORY_KEYWORDS = [
+  "accessories", "accessory", "bags", "bag", "duffle bag", "denim bag",
+  "sunglasses", "sunglass", "glasses", "eyewear", "belts", "belt",
+  "bracelets", "bracelet", "rings", "ring", "pendants", "pendant",
+  "watches", "watch", "chains & necklaces", "chains", "necklace", "necklaces",
+  "hats & caps", "hat", "cap", "dupattas", "dupatta", "scarves & bandanas",
+  "scarves", "scarf", "jewelry", "jewellery", "keychains", "keychain",
+  "earrings", "earring", "bag accessories", "footwear", "shoes",
+  "bookmarks", "bookmark", "gift card", "gift cards", "wallets", "wallet",
+  "pocket charm", "utility charm"
+];
+const ACCESSORY_SET = new Set(ACCESSORY_KEYWORDS);
+
+/**
+ * Determines whether a product is strictly "Clothing" or "Accessories".
+ * Categories like Bags, Sunglasses, Bracelets, Belts, Jewelry, Scarves, Bookmarks, Gift Cards -> Accessories.
+ * Everything else -> Clothing.
+ */
+export function determineProductType(
+  category: string | null | undefined,
+  rawProductType: string | null | undefined,
+  title: string | null | undefined,
+): "Clothing" | "Accessories" {
+  const cat = (category ?? "").trim().toLowerCase();
+  const rawType = (rawProductType ?? "").trim().toLowerCase();
+  const t = (title ?? "").trim().toLowerCase();
+
+  if (ACCESSORY_SET.has(cat) || ACCESSORY_SET.has(rawType)) {
+    return "Accessories";
+  }
+
+  // Check if title or rawType names an accessory, unless the title explicitly describes a clothing item (e.g. jorts with detachable bag)
+  const isGarmentTitle = /\b(jorts|shorts|pants|trousers|dress|dresses|jacket|jackets|shirt|shirts|top|tops|skirt|skirts|jeans|hoodie|kaftan|saree|kurta|set|blazer|coat|swimsuit|swimwear|blouse)\b/i.test(t);
+
+  if (!isGarmentTitle) {
+    for (const kw of ACCESSORY_KEYWORDS) {
+      const re = new RegExp(`\\b${kw}\\b`, "i");
+      if (re.test(t) || re.test(rawType)) return "Accessories";
+    }
+  }
+
+  return "Clothing";
+}
+
+const KNOWN_GARMENT_CATEGORIES: Record<string, string> = {
+  dress: "Dresses",
+  dresses: "Dresses",
+  "co-ord set": "Co-ord Sets",
+  "co-ord sets": "Co-ord Sets",
+  "coord set": "Co-ord Sets",
+  "coord sets": "Co-ord Sets",
+  coord: "Co-ord Sets",
+  coords: "Co-ord Sets",
+  sets: "Co-ord Sets",
+  jean: "Jeans",
+  jeans: "Jeans",
+  shirt: "Shirts",
+  shirts: "Shirts",
+  jacket: "Jackets",
+  jackets: "Jackets",
+  trouser: "Trousers",
+  trousers: "Trousers",
+  pant: "Trousers",
+  pants: "Trousers",
+  bottoms: "Trousers",
+  top: "Tops",
+  tops: "Tops",
+  "top & blouses": "Blouses",
+  blouse: "Blouses",
+  blouses: "Blouses",
+  "t-shirt": "T-Shirts",
+  "t-shirts": "T-Shirts",
+  tshirt: "T-Shirts",
+  tshirts: "T-Shirts",
+  tee: "T-Shirts",
+  skirt: "Skirts",
+  skirts: "Skirts",
+  sleepwear: "Co-ord Sets",
+  vest: "Vests & Waistcoats",
+  vests: "Vests & Waistcoats",
+  kaftan: "Kaftans",
+  kaftans: "Kaftans",
+  hoodie: "Hoodies & Sweatshirts",
+  hoodies: "Hoodies & Sweatshirts",
+  kurta: "Kurtas",
+  kurtas: "Kurtas",
+  saree: "Sarees",
+  sarees: "Sarees",
+  swimwear: "Swimwear",
+  bikini: "Bikini Sets",
+  activewear: "Activewear",
+  jumpsuit: "Jumpsuits",
+  jumpsuits: "Jumpsuits",
+  overcoats: "Outerwear",
+  overlay: "Outerwear",
+};
+
+/**
+ * Checks if raw merchant productType or title is a valid garment category.
+ */
+export function categoryFromMerchantType(rawType: string | null | undefined): string | null {
+  if (!rawType) return null;
+  const lower = rawType.trim().toLowerCase();
+  return KNOWN_GARMENT_CATEGORIES[lower] ?? null;
+}
+

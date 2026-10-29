@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { planCatalog } from "./plan.ts";
 import type { MetaobjectInput, PlanInput, ProductRow, ShopifyProductInput, ShopifyVariantInput } from "./plan.ts";
-import { categoryFromShopify, chooseGender, cleanLegacyScalar, imageIdentity, sortSizes } from "./normalize.ts";
+import { categoryFromShopify, chooseGender, cleanLegacyScalar, imageIdentity, normalizeSizeToken, sortSizes } from "./normalize.ts";
 
 const CDN = "https://cdn.shopify.com/s/files/1/0001/files/";
 const SHOP = "test-brand.myshopify.com";
@@ -107,16 +107,12 @@ function plan(fields: Partial<PlanInput>) {
     legacyRows: [],
     existingRows: [],
     existingLinks: [],
-    existingJobs: [],
     metaobjects: new Map(),
     knownCategories: new Set(["Tank Tops", "Trousers", "Co-ord Sets", "Blouses"]),
     now: new Date("2026-10-26T00:00:00Z"),
     ...fields,
   });
 }
-
-const steps = (result: ReturnType<typeof plan>, id: string) =>
-  result.jobs.filter((j) => j.catalogProductId === id).map((j) => j.step).sort();
 
 const metaobjects = (entries: MetaobjectInput[]) => new Map(entries.map((e) => [e.id, e]));
 
@@ -181,13 +177,12 @@ test("renamed handle with the same title goes to review instead of creating a du
   assert.match(result.links[0].reason!, /renamed/);
 });
 
-test("new product gets a new id and the full enrichment set", () => {
+test("new product gets a new id", () => {
   const p = product({ handle: "brand-new" });
   const result = plan({ shopifyProducts: [p] });
   const row = result.rows[0];
   assert.equal(result.links[0].status, "new");
   assert.equal(row.legacy_product_id, null);
-  assert.deepEqual(steps(result, row.id), ["body_part_tag", "color", "image_embedding", "text_attributes", "text_embedding"]);
   assert.equal(row.brand, "Test Brand");
 });
 
@@ -268,8 +263,6 @@ test("colour split: the matched colour keeps its row, a new colour inherits from
   assert.deepEqual(beigeRow.images.map((i: { src: string }) => imageIdentity(i.src)), [`${CDN}beige-1.jpg`, `${CDN}beige-2.jpg`]);
   assert.deepEqual(beigeRow.sizes, ["S", "M"]);
   assert.deepEqual(beigeRow.sizes_in_stock, ["M"]);
-  assert.ok(steps(result, beigeRow.id).includes("text_attributes"));
-  assert.ok(!steps(result, redRow.id).includes("text_attributes"));
 });
 
 test("a colour option with one value is not a split", () => {
@@ -294,7 +287,7 @@ test("colour without variant images falls back to all media and says so", () => 
 
 // ------------------------------------------------------- live and stock ---
 
-test("only published active and draft products are stored; drafts aren't live but are enriched", () => {
+test("only published active products are stored; drafts, unlisted, archived are excluded", () => {
   const draft = product({ status: "DRAFT" });
   const unlisted = product({ status: "UNLISTED" });
   const archived = product({ status: "ARCHIVED" });
@@ -302,21 +295,18 @@ test("only published active and draft products are stored; drafts aren't live bu
   const deleted = product({ deletedAt: new Date() });
   const live = product();
   const result = plan({ shopifyProducts: [draft, unlisted, archived, unpublished, deleted, live] });
-  assert.deepEqual(result.rows.map((r) => r.shopify_product_id).sort(), [draft.productId, live.productId].sort());
-  const draftRow = result.rows.find((r) => r.shopify_product_id === draft.productId)!;
+  assert.deepEqual(result.rows.map((r) => r.shopify_product_id), [live.productId]);
   const liveRow = result.rows.find((r) => r.shopify_product_id === live.productId)!;
-  assert.equal(draftRow.live_on_aeza, false);
-  assert.equal(draftRow.is_active, false);
-  assert.equal(draftRow.is_available, false, "a draft can't be bought");
   assert.equal(liveRow.live_on_aeza, true);
-  assert.ok(result.jobs.some((j) => j.catalogProductId === draftRow.id), "drafts are enriched ahead of going live");
+  assert.equal(liveRow.is_active, true);
 });
 
-test("a draft that gets activated becomes live without being rebuilt", () => {
+test("a draft that gets activated is stored and becomes live", () => {
   const draft = product({ status: "DRAFT" });
   const first = plan({ shopifyProducts: [draft] });
-  const second = plan({ shopifyProducts: [{ ...draft, status: "ACTIVE" }], existingRows: first.rows });
-  assert.equal(second.rows[0].id, first.rows[0].id);
+  assert.equal(first.rows.length, 0, "drafts are not stored");
+  const second = plan({ shopifyProducts: [{ ...draft, status: "ACTIVE" }] });
+  assert.equal(second.rows.length, 1);
   assert.equal(second.rows[0].live_on_aeza, true);
   assert.deepEqual(second.deletes, []);
 });
@@ -379,64 +369,18 @@ test("legacy rows with no Shopify product aren't stored, and old legacy-only row
   assert.ok(result.notes.some((n) => /1 legacy rows have no published Shopify product/.test(n.note)));
 });
 
-// ------------------------------------------------------- re-runs / jobs ---
+// ----------------------------------------------------------------- re-runs ---
 
-function rerun(change: (p: ShopifyProductInput) => void) {
+test("price and stock changes update the catalog row", () => {
   const old = legacy({ handle: "stable" });
   const p = product({ handle: "stable" });
   const first = plan({ shopifyProducts: [p], legacyRows: [old] });
   const row = first.rows.find((r) => r.shopify_product_id === p.productId)!;
-  const doneJobs = first.jobs.map((j) => ({ catalogProductId: j.catalogProductId, step: j.step, status: "done", inputHash: j.inputHash }));
   const next = structuredClone(p);
-  change(next);
-  return { row, second: plan({ shopifyProducts: [next], legacyRows: [old], existingRows: [row], existingJobs: doneJobs }) };
-}
-
-test("price and stock changes re-run nothing", () => {
-  const { row, second } = rerun((p) => {
-    p.variants[0].price = "799.00";
-    p.variants[0].inventoryQuantity = 0;
-  });
-  assert.deepEqual(steps(second, row.id), []);
+  next.variants[0].price = "799.00";
+  next.variants[0].inventoryQuantity = 0;
+  const second = plan({ shopifyProducts: [next], legacyRows: [old], existingRows: [row] });
   assert.equal(second.rows[0].price, "799.00");
-});
-
-test("a new ?v= on the same image re-runs nothing", () => {
-  const { row, second } = rerun((p) => {
-    p.media[0].image!.url = p.media[0].image!.url.replace("?v=1", "?v=99");
-  });
-  assert.deepEqual(steps(second, row.id), []);
-});
-
-test("a new photo re-runs colour and image embedding only", () => {
-  const { row, second } = rerun((p) => {
-    p.media[0].image!.url = `${CDN}new-photo.jpg?v=1`;
-  });
-  assert.deepEqual(steps(second, row.id), ["color", "image_embedding"]);
-});
-
-test("a title change refreshes the text attributes and embedding", () => {
-  const { row, second } = rerun((p) => {
-    p.title = "Renamed product";
-  });
-  const text = second.jobs.find((j) => j.catalogProductId === row.id && j.step === "text_attributes")!;
-  assert.equal(text.mode, "refresh");
-  assert.ok(steps(second, row.id).includes("text_embedding"));
-});
-
-test("missing AI fields queue a fill-only text step; complete rows queue nothing", () => {
-  const gap = legacy({ handle: "gap", season: [], layering_role: null });
-  const full = legacy({ handle: "full" });
-  const result = plan({ shopifyProducts: [product({ handle: "gap" }), product({ handle: "full" })], legacyRows: [gap, full] });
-  const job = result.jobs.find((j) => j.catalogProductId === gap.id && j.step === "text_attributes")!;
-  assert.equal(job.mode, "fill");
-  assert.match(job.reason, /season, layering_role/);
-  assert.ok(!result.jobs.some((j) => j.catalogProductId === full.id && j.step === "text_attributes"));
-});
-
-test("a product without images queues no AI", () => {
-  const result = plan({ shopifyProducts: [product({ media: [] })] });
-  assert.equal(result.jobs.length, 0);
 });
 
 // ------------------------------------------------------ brand attributes ---
@@ -478,9 +422,11 @@ test("brand attributes override legacy values; unreadable ones keep the legacy v
 });
 
 test("the brand's pants length and waist rise win over legacy AI values, even multi-valued", () => {
-  const old = legacy({ handle: "pants-attrs", pants_length_type: "ankle", waist_rise: "mid" });
+  const old = legacy({ handle: "pants-attrs", product_category: "Trousers", pants_length_type: "ankle", waist_rise: "mid" });
   const p = product({
     handle: "pants-attrs",
+    categoryName: "Trousers",
+    productType: "pants",
     metafields: [
       { namespace: "shopify", key: "pants-length-type", type: "list.metaobject_reference", value: ["gid://m/long"] },
       { namespace: "shopify", key: "waist-rise", type: "list.metaobject_reference", value: ["gid://m/high", "gid://m/mid"] },
@@ -525,5 +471,11 @@ test("normalizers", () => {
   assert.equal(chooseGender(["Male", "Female"], null), "unisex");
   assert.equal(chooseGender(["Female"], "men"), "women", "brand label wins over a value outside it");
   assert.deepEqual(sortSizes(["XL", "S", "M", "XS", "L"]), ["XS", "S", "M", "L", "XL"]);
+  assert.deepEqual(sortSizes(["2XL", "S", "3XL", "One Size", "Default Title"]), ["S", "XXL", "XXXL", "FREE SIZE"]);
+  assert.equal(normalizeSizeToken("2XL"), "XXL");
+  assert.equal(normalizeSizeToken("3XL"), "XXXL");
+  assert.equal(normalizeSizeToken("2XS"), "XXS");
+  assert.equal(normalizeSizeToken("Default Title"), null);
+  assert.equal(normalizeSizeToken("One Size"), "FREE SIZE");
   assert.equal(categoryFromShopify("Jeans", "Ocean jeans", "", new Set(["Trousers"])), null, "unknown categories are left for AI");
 });

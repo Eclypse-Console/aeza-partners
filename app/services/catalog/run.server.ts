@@ -1,5 +1,5 @@
 // One catalog run for one store: Shopify mirror + legacy products -> plan ->
-// CatalogProduct / CatalogVariant / CatalogProductLink / EnrichmentJob.
+// CatalogProduct / CatalogVariant / CatalogProductLink.
 //
 // Only published products (active or draft) get catalog rows; legacy rows only lend their
 // id and AI work to a matching Shopify product.
@@ -58,7 +58,7 @@ export async function runCatalogSync(options: CatalogRunOptions): Promise<Catalo
   const full = !productIds;
 
   const shopifyProducts = await loadShopifyProducts(ops, shop, productIds);
-  const existing = await loadExisting(ops, shop, productIds);
+  const existing = await loadExisting(legacy, shop, productIds);
   const store = await ops.shopifyStore.findUnique({ where: { shop }, include: { brandProfile: true } });
 
   // The legacy brand: found by handle on a full run and remembered on the
@@ -79,7 +79,7 @@ export async function runCatalogSync(options: CatalogRunOptions): Promise<Catalo
   const usage = await loadLegacyUsage(legacy, legacyRows.map((r) => r.id));
 
   const ids = metaobjectIds(shopifyProducts);
-  const { values: metaobjects, unresolved } = await resolveMetaobjects(ops, shop, ids, async (batch) =>
+  const { values: metaobjects, unresolved } = await resolveMetaobjects(legacy, shop, ids, async (batch) =>
     (await graphql<{ nodes: MetaobjectNode[] }>(METAOBJECT_NODES_QUERY, { ids: batch })).nodes,
   );
 
@@ -98,7 +98,7 @@ export async function runCatalogSync(options: CatalogRunOptions): Promise<Catalo
   // Shopify sync fills the mirror.
   const missingFromMirror = full
     ? await ops.shopifyProduct.count({
-        where: { shop, published: true, status: { in: ["ACTIVE", "DRAFT"] }, deletedAt: null, productId: { notIn: [...inMirror] } },
+        where: { shop, published: true, status: "ACTIVE", deletedAt: null, productId: { notIn: [...inMirror] } },
       })
     : 0;
 
@@ -109,14 +109,13 @@ export async function runCatalogSync(options: CatalogRunOptions): Promise<Catalo
     legacyRows,
     existingRows: existing.rows,
     existingLinks: existing.links,
-    existingJobs: existing.jobs,
     metaobjects,
     knownCategories: await loadKnownCategories(legacy),
     legacyUsage: usage,
     removedProductIds,
   });
 
-  if (!dryRun) await writePlan(ops, shop, plan);
+  if (!dryRun) await writePlan(legacy, shop, plan);
   return {
     plan,
     brand,

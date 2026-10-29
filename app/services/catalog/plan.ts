@@ -21,15 +21,20 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import {
+  applyCategoryFieldExclusions,
+  categoryFromMerchantType,
   categoryFromShopify,
   chooseGender,
   cleanLegacyScalar,
+  determineProductType,
   imageIdentity,
+  normalizeCategory,
   normalizeFabric,
   normalizeFitType,
   normalizeMultiScalar,
   normalizeNeckline,
   slugValue,
+  normalizeSizeToken,
   sortSizes,
   titleCase,
 } from "./normalize.ts";
@@ -88,8 +93,6 @@ export type LinkInput = {
   reviewedAt: Date | null;
 };
 
-export type JobInput = { catalogProductId: string; step: string; status: string; inputHash: string | null };
-
 export type PlanInput = {
   shop: string;
   brand: { id: string | null; name: string | null };
@@ -97,7 +100,6 @@ export type PlanInput = {
   legacyRows: ProductRow[];
   existingRows: ProductRow[];
   existingLinks: LinkInput[];
-  existingJobs: JobInput[];
   metaobjects: Map<string, MetaobjectInput>;
   knownCategories: ReadonlySet<string>;
   /** Legacy row id -> how much depends on it (interactions, ghost images, ...). */
@@ -145,20 +147,11 @@ export type LinkRow = {
   unchanged?: boolean;
 };
 
-export type JobRow = {
-  catalogProductId: string;
-  step: "text_attributes" | "body_part_tag" | "text_embedding" | "color" | "image_embedding";
-  mode: "fill" | "refresh";
-  reason: string;
-  inputHash: string;
-};
-
 export type PlanResult = {
   rows: ProductRow[];
   variants: CatalogVariantRow[];
   links: LinkRow[];
-  jobs: JobRow[];
-  /** Catalog row ids to delete (their sizes and jobs go with them). */
+  /** Catalog row ids to delete (their sizes go with them). */
   deletes: string[];
   notes: Array<{ handle: string | null; colorKey: string; note: string }>;
 };
@@ -250,29 +243,6 @@ const COLOUR_SPECIFIC_FIELDS = new Set([
   "analysis_status",
   "ghost_status",
 ]);
-
-// Text the embedding is built from; a change here re-embeds (the worker
-// skips the API call when the rebuilt text is identical).
-const EMBEDDING_FIELDS = [
-  "title",
-  "brand",
-  "gender",
-  "product_category",
-  "product_type",
-  "base_color",
-  "primary_colors",
-  "color_family",
-  "tags",
-  "fabric",
-  "occasion",
-  "aesthetic",
-  "season",
-  "fit",
-  "fit_type",
-  "neckline",
-  "sleeve_length_type",
-  "ai_description",
-];
 
 // Shopify attribute metafield -> catalog column it fills.
 const ATTRIBUTE_FIELDS: Array<{ key: string; column: string; normalize: (labels: string[]) => string | null }> = [
@@ -645,6 +615,8 @@ function buildRow(
   const compareAts = ordered.map((v) => (v.compareAtPrice === null ? null : Number(v.compareAtPrice))).filter((v): v is number => v !== null);
   const sizes = sortSizes([...new Set(ordered.map(sizeOf))]);
   const inStock = sortSizes([...new Set(ordered.filter(canBuy).map(sizeOf))]);
+  if (sizes.length === 0 && ordered.length > 0) sizes.push("FREE SIZE");
+  if (inStock.length === 0 && ordered.some(canBuy)) inStock.push("FREE SIZE");
   setField(row, sources, "variants", ordered.map(variantJson), "shopify");
   // The row's SKU is the colour's first real Shopify SKU; legacy TEMP-SKU codes are dropped.
   setField(row, sources, "sku_id", ordered.map((v) => v.sku).find(isRealSku) ?? null, "shopify");
@@ -715,13 +687,38 @@ function buildRow(
   // 4. Gaps a rule can fill without AI.
   if (isEmpty(row.product_category)) {
     const category = categoryFromShopify(product.categoryName, product.title, product.productType, input.knownCategories);
-    if (category) setField(row, sources, "product_category", category, "derived");
+    const fromMerchant = categoryFromMerchantType(product.productType);
+    if (category) {
+      setField(row, sources, "product_category", category, "derived");
+    } else if (fromMerchant) {
+      setField(row, sources, "product_category", fromMerchant, "derived");
+    }
   }
-  if (isEmpty(row.product_type) && product.productType) setField(row, sources, "product_type", product.productType, "shopify");
+
+  // Strict product_type mapping: ONLY 'Clothing' or 'Accessories'
+  const computedType = determineProductType(row.product_category, product.productType, product.title);
+  setField(row, sources, "product_type", computedType, "derived");
+
+  // Fallback gender if missing
+  if (isEmpty(row.gender)) {
+    const cat = (row.product_category ?? "").toLowerCase();
+    if (["dresses", "skirts", "sarees", "kaftans", "kurtas", "kurta sets", "blouses", "crop tops", "bikini sets"].some((c) => cat.includes(c))) {
+      setField(row, sources, "gender", "women", "derived");
+    } else if (computedType === "Accessories") {
+      setField(row, sources, "gender", "unisex", "derived");
+    }
+  }
+
+  // Fallback base_color if missing but primary_colors exists
+  if (isEmpty(row.base_color) && Array.isArray(row.primary_colors) && row.primary_colors.length > 0) {
+    setField(row, sources, "base_color", row.primary_colors.map((c: string) => c.toLowerCase()), "derived");
+  }
+
   if (isEmpty(row.brand)) setField(row, sources, "brand", input.brand.name, "derived");
   if (isEmpty(row.brand_id)) setField(row, sources, "brand_id", input.brand.id, "derived");
   if (isEmpty(row.tags)) {
-    const tags = [row.product_category, row.brand, ...(row.primary_colors ?? []), ...(row.fabric ?? []), row.gender]
+    const cleanMerchantTags = (product.tags ?? []).filter((t: string) => !/^[A-Z0-9_\-/]{8,}$/.test(t) && !t.includes("TEMP-"));
+    const tags = [row.product_category, row.brand, ...(row.primary_colors ?? []), ...(row.fabric ?? []), row.gender, ...cleanMerchantTags]
       .filter(Boolean)
       .map((t: string) => t.toLowerCase());
     setField(row, sources, "tags", [...new Set(tags)], "derived");
@@ -736,7 +733,7 @@ function buildRow(
     catalogProductId: "",
     shop: input.shop,
     sku: isRealSku(v.sku) ? v.sku : null,
-    size: sizeOf(v),
+    size: normalizeSizeToken(sizeOf(v)) ?? "FREE SIZE",
     options: Object.fromEntries(v.selectedOptions.map((o) => [o.name, o.value])),
     position: v.position,
     price: Number(v.price).toFixed(2),
@@ -746,46 +743,10 @@ function buildRow(
     tracked: v.inventoryItem?.tracked !== false,
     available: canBuy(v),
   }));
+  if (row.product_category) row.product_category = normalizeCategory(row.product_category);
+  applyCategoryFieldExclusions(row);
+
   return { row, variants: variantRows, notes };
-}
-
-// -------------------------------------------------------------------- jobs ---
-
-function plannedJobs(row: ProductRow, base: ProductRow | null, baseKind: string | null, existingJobs: Map<string, JobInput>): JobRow[] {
-  // Every catalog row is published (drafts too, so they're ready when they go live).
-  if (!row.primary_image) return [];
-  const jobs: JobRow[] = [];
-  const add = (step: JobRow["step"], mode: JobRow["mode"], reason: string, inputHash: string) => {
-    const existing = existingJobs.get(`${row.id}|${step}`);
-    if (existing && existing.inputHash === inputHash && (existing.status === "done" || existing.status === "skipped")) return;
-    jobs.push({ catalogProductId: row.id, step, mode, reason, inputHash });
-  };
-
-  const textChanged = baseKind === "catalog" && base?.text_hash && base.text_hash !== row.text_hash;
-  const imagesChanged = baseKind === "catalog" && base?.image_hash && base.image_hash !== row.image_hash;
-  const missing = CORE_AI_FIELDS.filter((f) => isEmpty(row[f]));
-
-  if (textChanged) add("text_attributes", "refresh", "title/description changed in Shopify", `${row.text_hash}:${row.image_hash}`);
-  else if (missing.length) add("text_attributes", "fill", `missing ${missing.join(", ")}`, `${row.text_hash}:${row.image_hash}:${missing.join(",")}`);
-
-  if (isEmpty(row.body_part_tag) || (textChanged && base?.product_category !== row.product_category)) {
-    add("body_part_tag", "fill", "missing body_part_tag", sha(row.product_category ?? ""));
-  }
-
-  if (imagesChanged || isEmpty(row.color_hex) || isEmpty(row.base_color)) {
-    add("color", imagesChanged ? "refresh" : "fill", imagesChanged ? "images changed" : "missing colour hex/base colour", row.image_hash);
-  }
-  if (imagesChanged || isEmpty(row.product_image_siglip_embedding)) {
-    add("image_embedding", imagesChanged ? "refresh" : "fill", imagesChanged ? "images changed" : "missing image embedding", sha(imageIdentity(row.primary_image)));
-  }
-
-  const signature = sha(EMBEDDING_FIELDS.map((f) => row[f] ?? null));
-  const baseSignature = base ? sha(EMBEDDING_FIELDS.map((f) => base[f] ?? null)) : null;
-  const textJobQueued = jobs.some((j) => j.step === "text_attributes");
-  if (isEmpty(row.multimodal_product_embeddings) || textJobQueued || signature !== baseSignature) {
-    add("text_embedding", "fill", isEmpty(row.multimodal_product_embeddings) ? "missing text embedding" : "embedding text may have changed", signature);
-  }
-  return jobs;
 }
 
 // --------------------------------------------------------------------- plan ---
@@ -805,11 +766,10 @@ export function planCatalog(input: PlanInput): PlanResult {
   const settledSlots = new Set(existingBySlot.keys());
   const existingById = new Map(input.existingRows.map((r) => [r.id, r]));
   const existingLinks = new Map(input.existingLinks.map((l) => [`${l.shopifyProductId}|${l.colorKey}`, l]));
-  const existingJobs = new Map(input.existingJobs.map((j) => [`${j.catalogProductId}|${j.step}`, j]));
   const shopifyHandles = new Set(input.shopifyProducts.map((p) => norm(p.handle)));
 
   const claimed = new Set<string>();
-  const result: PlanResult = { rows: [], variants: [], links: [], jobs: [], deletes: [], notes: [] };
+  const result: PlanResult = { rows: [], variants: [], links: [], deletes: [], notes: [] };
   const existingOf = (productId: string) => input.existingRows.filter((r) => r.shopify_product_id === productId);
   const remove = (row: ProductRow, why: string) => {
     result.deletes.push(row.id);
@@ -860,7 +820,6 @@ export function planCatalog(input: PlanInput): PlanResult {
 
       result.rows.push(row);
       result.variants.push(...variants);
-      result.jobs.push(...plannedJobs(row, base, baseKind, existingJobs));
       notes.forEach((note) => result.notes.push({ handle: product.handle, colorKey: slot.group.colorKey, note }));
       productRows.push(row);
     }
@@ -898,10 +857,10 @@ export function planCatalog(input: PlanInput): PlanResult {
 type ProductState = Pick<ShopifyProductInput, "published" | "status" | "deletedAt">;
 
 // Shopify statuses a published product may have to be in the catalog.
-// Drafts are included for now (stored and enriched, but not buyable).
-const CATALOG_STATUSES = new Set(["ACTIVE", "DRAFT"]);
+// Only ACTIVE products are included in the catalog (drafts are excluded).
+const CATALOG_STATUSES = new Set(["ACTIVE"]);
 
-/** In the catalog: the brand published it, it's active or a draft, and not deleted. */
+/** In the catalog: the brand published it, it's active in Shopify, and not deleted. */
 export function inCatalog(product: ProductState): boolean {
   return product.published && CATALOG_STATUSES.has(product.status ?? "") && !product.deletedAt;
 }

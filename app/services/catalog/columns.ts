@@ -112,21 +112,7 @@ export const CATALOG_ONLY_COLUMNS: Record<string, SqlType> = {
 };
 
 /** Extra columns the published catalog_products table adds to the products shape. */
-export const PUBLISHED_EXTRA_COLUMNS: Record<string, SqlType> = {
-  shop: "text",
-  shopify_product_id: "text",
-  color_key: "text",
-  source: "text",
-  live_on_aeza: "bool",
-  is_available: "bool",
-  sizes_in_stock: "text[]",
-  compare_at_price: "numeric",
-  rating: "numeric",
-  rating_count: "int",
-  linked_product_ids: "text[]",
-  online_store_url: "text",
-  synced_at: "timestamp",
-};
+export const PUBLISHED_EXTRA_COLUMNS: Record<string, SqlType> = { ...CATALOG_ONLY_COLUMNS };
 
 export const CATALOG_COLUMNS: Record<string, SqlType> = { ...PRODUCT_COLUMNS, ...CATALOG_ONLY_COLUMNS };
 

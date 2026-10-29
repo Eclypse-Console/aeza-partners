@@ -99,7 +99,7 @@ export async function syncCatalog(shop: string, productIds?: string[]): Promise<
         data: { lastCatalogSyncAt: new Date(), catalogSyncError: missing },
       });
       console.log(
-        `[catalog] ${shop}: ${ids ? `${ids.length} products` : "full run"}, ${plan.rows.length} rows, ${plan.deletes.length} removed, ${plan.jobs.length} enrichment jobs${missing ? `; ${missing}` : ""}`,
+        `[catalog] ${shop}: ${ids ? `${ids.length} products` : "full run"}, ${plan.rows.length} rows, ${plan.deletes.length} removed${missing ? `; ${missing}` : ""}`,
       );
       if (missing) await refillMirror(admin, shop);
     } catch (error) {

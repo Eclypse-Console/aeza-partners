@@ -7,15 +7,14 @@
 
 import type { PrismaClient } from "@prisma/client";
 import { CATALOG_COLUMNS, PRODUCT_COLUMNS, selectList, upsertSql } from "./columns.ts";
-import type { JobInput, LinkInput, MetaobjectInput, PlanResult, ProductRow, ShopifyProductInput } from "./plan.ts";
+import type { LinkInput, MetaobjectInput, PlanResult, ProductRow, ShopifyProductInput } from "./plan.ts";
 
 const BATCH = 50;
 // Links / jobs per statement (small rows, so bigger batches).
 const BULK_BATCH = 500;
 
-// The catalog migration installed pgvector into the connector's own schema,
-// leaving the shared public schema of aeza-ops untouched.
-export const OPS_VECTOR_TYPE = "shopify_connector.vector";
+// Vector type in the main products database (PRODUCTS_DB), where pgvector lives in public.
+export const OPS_VECTOR_TYPE = "vector";
 
 /** Prisma returns numeric as Decimal; the planner works with strings. */
 function plain(row: Record<string, unknown>): ProductRow {
@@ -126,12 +125,12 @@ export type MetaobjectNode = {
  * unresolved (not cached) and the planner keeps the existing values.
  */
 export async function resolveMetaobjects(
-  ops: PrismaClient,
+  catalogDb: PrismaClient,
   shop: string,
   ids: string[],
   fetchNodes: (ids: string[]) => Promise<MetaobjectNode[]>,
 ): Promise<{ values: Map<string, MetaobjectInput>; unresolved: number }> {
-  const cached = await ops.metaobjectValue.findMany({ where: { shop, id: { in: ids } } });
+  const cached = await catalogDb.metaobjectValue.findMany({ where: { shop, id: { in: ids } } });
   const values = new Map<string, MetaobjectInput>(cached.map((m) => [m.id, { id: m.id, type: m.type, label: m.label, hex: m.hex }]));
   const missing = ids.filter((id) => !values.has(id));
   let unresolved = 0;
@@ -154,7 +153,7 @@ export async function resolveMetaobjects(
         fields,
       }];
     });
-    await ops.metaobjectValue.createMany({ data: entries, skipDuplicates: true });
+    await catalogDb.metaobjectValue.createMany({ data: entries, skipDuplicates: true });
     for (const entry of entries) values.set(entry.id, { id: entry.id, type: entry.type, label: entry.label, hex: entry.hex });
   }
   return { values, unresolved };
@@ -228,54 +227,49 @@ export async function loadKnownCategories(legacy: PrismaClient): Promise<Set<str
   return new Set(rows.map((r) => r.c));
 }
 
-// --------------------------------------------------------------- ops side ---
+// --------------------------------------------------------------- catalog side ---
 
-/** The shop's catalog rows, links and jobs (all, or for just these Shopify products). */
-export async function loadExisting(ops: PrismaClient, shop: string, productIds?: string[]) {
-  const rows = await ops.$queryRawUnsafe<Array<Record<string, unknown>>>(
+/** The shop's catalog rows and links (all, or for just these Shopify products). */
+export async function loadExisting(catalogDb: PrismaClient, shop: string, productIds?: string[]) {
+  const rows = await catalogDb.$queryRawUnsafe<Array<Record<string, unknown>>>(
     `SELECT ${selectList(CATALOG_COLUMNS)} FROM shopify_connector."CatalogProduct"
       WHERE shop = $1 ${productIds ? "AND shopify_product_id = ANY($2::text[])" : ""}`,
     ...(productIds ? [shop, productIds] : [shop]),
   );
-  const links = await ops.catalogProductLink.findMany({
+  const links = await catalogDb.catalogProductLink.findMany({
     where: { shop, ...(productIds ? { shopifyProductId: { in: productIds } } : {}) },
-  });
-  const jobs = await ops.enrichmentJob.findMany({
-    where: { catalogProduct: { shop, ...(productIds ? { shopify_product_id: { in: productIds } } : {}) } },
-    select: { catalogProductId: true, step: true, status: true, inputHash: true },
   });
   return {
     rows: rows.map(plain),
     links: links.map<LinkInput>((l) => ({ ...l, reviewedAt: l.reviewedAt })),
-    jobs: jobs as JobInput[],
   };
 }
 
-/** Writes rows, sizes, links and jobs, and deletes removed rows. Jobs already running are left alone. */
-export async function writePlan(ops: PrismaClient, shop: string, plan: PlanResult): Promise<void> {
+/** Writes rows, sizes, and links, and deletes removed rows. */
+export async function writePlan(catalogDb: PrismaClient, shop: string, plan: PlanResult): Promise<void> {
   if (plan.deletes.length) {
-    // Sizes and jobs go with the row (ON DELETE CASCADE).
-    await ops.catalogProduct.deleteMany({ where: { shop, id: { in: plan.deletes } } });
+    // Sizes go with the row (ON DELETE CASCADE).
+    await catalogDb.catalogProduct.deleteMany({ where: { shop, id: { in: plan.deletes } } });
   }
   for (let start = 0; start < plan.rows.length; start += BATCH) {
     const { sql, params } = upsertSql(`shopify_connector."CatalogProduct"`, CATALOG_COLUMNS, plan.rows.slice(start, start + BATCH), {
       vectorType: OPS_VECTOR_TYPE,
     });
-    await ops.$executeRawUnsafe(sql, ...params);
+    await catalogDb.$executeRawUnsafe(sql, ...params);
   }
 
   const productIds = [...new Set(plan.variants.map((v) => v.catalogProductId))];
-  await ops.$transaction([
-    ops.catalogVariant.deleteMany({ where: { OR: [{ catalogProductId: { in: productIds } }, { variantId: { in: plan.variants.map((v) => v.variantId) } }] } }),
-    ops.catalogVariant.createMany({ data: plan.variants }),
+  await catalogDb.$transaction([
+    catalogDb.catalogVariant.deleteMany({ where: { OR: [{ catalogProductId: { in: productIds } }, { variantId: { in: plan.variants.map((v) => v.variantId) } }] } }),
+    catalogDb.catalogVariant.createMany({ data: plan.variants }),
   ]);
 
-  // Links and jobs in one statement per batch: one round trip per row made a
+  // Links in one statement per batch: one round trip per row made a
   // big store's first run outlast the serverless time limit.
   const links = plan.links.filter((link) => !link.reviewed && !link.unchanged);
   for (let start = 0; start < links.length; start += BULK_BATCH) {
     const batch = links.slice(start, start + BULK_BATCH).map((link) => ({ ...link, shop }));
-    await ops.$executeRaw`
+    await catalogDb.$executeRaw`
       INSERT INTO shopify_connector."CatalogProductLink" (
         shop, "shopifyProductId", "colorKey", "legacyProductId", "duplicateLegacyIds",
         status, method, confidence, reason, candidates, "createdAt", "updatedAt"
@@ -298,28 +292,6 @@ export async function writePlan(ops: PrismaClient, shop: string, plan: PlanResul
         candidates = EXCLUDED.candidates,
         "updatedAt" = now()
       WHERE "CatalogProductLink"."reviewedAt" IS NULL
-    `;
-  }
-
-  for (let start = 0; start < plan.jobs.length; start += BULK_BATCH) {
-    const batch = plan.jobs.slice(start, start + BULK_BATCH);
-    await ops.$executeRaw`
-      INSERT INTO shopify_connector."EnrichmentJob" (
-        "catalogProductId", step, mode, status, reason, "inputHash", attempts, "createdAt", "updatedAt"
-      )
-      SELECT r."catalogProductId"::uuid, r.step, r.mode, 'pending', r.reason, r."inputHash", 0, now(), now()
-        FROM jsonb_to_recordset(${JSON.stringify(batch)}::jsonb) AS r(
-          "catalogProductId" text, step text, mode text, reason text, "inputHash" text
-        )
-      ON CONFLICT ("catalogProductId", step) DO UPDATE SET
-        mode = EXCLUDED.mode,
-        reason = EXCLUDED.reason,
-        "inputHash" = EXCLUDED."inputHash",
-        status = 'pending',
-        attempts = 0,
-        error = NULL,
-        "updatedAt" = now()
-      WHERE "EnrichmentJob".status <> 'processing'
     `;
   }
 }
