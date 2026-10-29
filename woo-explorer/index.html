@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nick Domain – WooCommerce API Explorer</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;display:flex;height:100vh;color:#222}
+#side{width:340px;overflow:auto;border-right:1px solid #ddd;padding:12px;background:#fafafa}
+#main{flex:1;display:flex;flex-direction:column;min-width:0}
+h3{margin:14px 0 6px;font-size:12px;text-transform:uppercase;color:#666}
+.ep{display:block;width:100%;text-align:left;padding:7px 9px;margin:3px 0;border:1px solid #ccc;background:#fff;border-radius:5px;cursor:pointer;font-size:13px}
+.ep:hover{background:#eef4ff}.ep small{display:block;color:#777;font-size:11px}
+.ep.on{border-color:#2563eb;background:#e8f0ff}
+#bar{padding:10px;border-bottom:1px solid #ddd;display:flex;gap:8px;align-items:center}
+#url{flex:1;padding:7px;font-family:monospace;font-size:12px}
+button.go{padding:7px 16px;background:#2563eb;color:#fff;border:0;border-radius:5px;cursor:pointer}
+#meta{padding:6px 10px;font-size:12px;color:#555;border-bottom:1px solid #eee}
+#tabs{padding:6px 10px}#tabs button{margin-right:4px;padding:3px 10px;border:1px solid #ccc;background:#fff;border-radius:4px;cursor:pointer}
+#tabs button.on{background:#222;color:#fff}
+#out{flex:1;overflow:auto;padding:10px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-all}
+table{border-collapse:collapse;font-family:system-ui;font-size:12px}td,th{border:1px solid #ddd;padding:4px 8px;text-align:left;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+th{background:#f0f0f0;position:sticky;top:0}.err{color:#b91c1c}
+input.p{width:100%;box-sizing:border-box;padding:5px;margin:2px 0 6px}
+</style></head><body>
+<div id="side">
+<b>Nick Domain · WooCommerce</b><div style="font-size:11px;color:#777" id="site"></div>
+<h3>Fill these, then click an endpoint</h3>
+<input class="p" id="id" placeholder="id (product / order)">
+<input class="p" id="pid" placeholder="product_id (for variations)">
+<input class="p" id="q" placeholder="search text / sku">
+<div id="list"></div>
+<p style="font-size:11px;color:#777">Shopify equivalent shown under each button.</p>
+</div>
+<div id="main">
+<div id="bar"><input id="url"><button class="go" id="go">Send</button></div>
+<div id="meta">Pick an endpoint on the left.</div>
+<div id="tabs"><button data-v="table" class="on">Table</button><button data-v="json">JSON</button><button data-v="keys">Field structure</button></div>
+<div id="out"></div>
+</div>
+<script>
+const SITE="https://knitdomain.com".replace(/\/+$/,""), CK="ck_058bd2a136786d366a38dc71b0f1de2d64d8e29c", CS="cs_3b9c30727bf6c84c1c73bd6dc358bdaac4bdecb3";
+document.getElementById("site").textContent=SITE;
+const P="/wp-json/wc/v3";
+const EPS=[
+["Connection",[
+ ["System status",P+"/system_status","check keys work"],
+ ["Store settings",P+"/settings/general","currency / timezone"]]],
+["Products (Shopify: product query / bulk catalog sync)",[
+ ["List products",P+"/products?per_page=20&page=1","bulk catalog export (paginated, max 100)"],
+ ["Published only",P+"/products?per_page=20&status=publish","status ACTIVE"],
+ ["Modified since date",P+"/products?per_page=20&modified_after=2026-10-01T00:00:00","products/update webhook refresh"],
+ ["One product",P+"/products/{id}","RefreshProduct query"],
+ ["Search products",P+"/products?per_page=20&search={q}","find by title"],
+ ["Find by SKU",P+"/products?sku={q}","variant sku lookup"]]],
+["Variants & stock (Shopify: variants / inventoryQuantity)",[
+ ["Variations of a product",P+"/products/{pid}/variations?per_page=100","variants: sku, price, options, stock"],
+ ["One variation",P+"/products/{pid}/variations/{id}","single variant"],
+ ["In-stock products",P+"/products?per_page=20&stock_status=instock","inventory_levels"]]],
+["Taxonomy",[
+ ["Categories",P+"/products/categories?per_page=100","productType"],
+ ["Tags",P+"/products/tags?per_page=100","tags"],
+ ["Attributes (size/colour)",P+"/products/attributes","selectedOptions"]]],
+["Orders (Shopify: orders / fulfillments)",[
+ ["List orders",P+"/orders?per_page=20","orders"],
+ ["One order",P+"/orders/{id}","status + line items"],
+ ["Order notes",P+"/orders/{id}/notes","tracking info usually lives here"],
+ ["Order refunds",P+"/orders/{id}/refunds","refunds"]]],
+["Webhooks",[
+ ["List webhooks",P+"/webhooks","webhook subscriptions"]]]];
+const $=s=>document.querySelector(s); let view="table", data=null;
+$("#list").innerHTML=EPS.map(([g,l])=>`<h3>${g}</h3>`+l.map(([n,u,s])=>`<button class="ep" data-u="${u}">${n}<small>${u.replace(P,"")} — ${s}</small></button>`).join("")).join("");
+document.querySelectorAll(".ep").forEach(b=>b.onclick=()=>{
+ document.querySelectorAll(".ep").forEach(x=>x.classList.remove("on"));b.classList.add("on");
+ $("#url").value=b.dataset.u.replace("{id}",$("#id").value).replace("{pid}",$("#pid").value).replace("{q}",encodeURIComponent($("#q").value));
+ send();});
+$("#go").onclick=send;$("#url").onkeydown=e=>e.key=="Enter"&&send();
+document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{view=b.dataset.v;document.querySelectorAll("#tabs button").forEach(x=>x.classList.toggle("on",x==b));render()});
+async function send(){
+ const u=$("#url").value;if(!u)return;
+ const full=SITE+u+(u.includes("?")?"&":"?")+"consumer_key="+CK+"&consumer_secret="+CS;
+ $("#meta").textContent="Loading…";$("#out").textContent="";const t=Date.now();
+ try{const r=await fetch(full);const txt=await r.text();let j;try{j=JSON.parse(txt)}catch{j=null}
+  const tot=r.headers.get("X-WP-Total"),pg=r.headers.get("X-WP-TotalPages");
+  $("#meta").innerHTML=`<b class="${r.ok?"":"err"}">${r.status} ${r.statusText}</b> · ${Date.now()-t} ms`+(tot?` · total items: ${tot} · pages: ${pg}`:"")+(Array.isArray(j)?` · this page: ${j.length}`:"");
+  data=j??txt;
+ }catch(e){data=null;$("#meta").innerHTML=`<span class="err">Request failed: ${e.message}</span> (probably CORS or wrong site URL – check browser console)`;return}
+ render();}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
+function cell(v){if(v==null)return"";if(typeof v=="object")return esc(JSON.stringify(v)).slice(0,120);return esc(v)}
+function keys(o,pre="",out={}){for(const k in o){const v=o[k],p=pre+k;const t=Array.isArray(v)?"array":v===null?"null":typeof v;out[p]=t;
+ if(t=="object")keys(v,p+".",out);else if(t=="array"&&v[0]&&typeof v[0]=="object")keys(v[0],p+"[].",out)}return out}
+function render(){const o=$("#out");if(data==null)return;
+ if(typeof data=="string"){o.textContent=data;return}
+ if(view=="json"){o.textContent=JSON.stringify(data,null,2);return}
+ const first=Array.isArray(data)?data[0]:data;
+ if(view=="keys"){o.innerHTML="<table><tr><th>field</th><th>type</th><th>example</th></tr>"+Object.entries(keys(first||{})).map(([k,t])=>{const ex=k.split(/\.|\[\]\./).reduce((a,x)=>a==null?a:Array.isArray(a)?a[0]?.[x]:a[x],first);return`<tr><td>${esc(k)}</td><td>${t}</td><td>${cell(ex)}</td></tr>`}).join("")+"</table>";return}
+ const rows=Array.isArray(data)?data:[data];if(!rows.length){o.textContent="(empty array)";return}
+ const cols=Object.keys(rows[0]);
+ o.innerHTML="<table><tr>"+cols.map(c=>`<th>${esc(c)}</th>`).join("")+"</tr>"+rows.map(r=>"<tr>"+cols.map(c=>`<td title="${esc(JSON.stringify(r[c]??"")).slice(0,300)}">${cell(r[c])}</td>`).join("")+"</tr>").join("")+"</table>";}
+</script></body></html>
