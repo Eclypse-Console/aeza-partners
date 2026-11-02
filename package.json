@@ -23,6 +23,8 @@
     "catalog:sync": "node --env-file-if-exists=.env scripts/catalog-sync.ts",
     "catalog:compare": "node --env-file-if-exists=.env scripts/catalog-compare.ts",
     "test:catalog": "node --test app/services/catalog/*.test.ts",
+    "test:woo": "node --test app/services/woo/*.test.ts",
+    "woo:sync": "node --env-file-if-exists=.env scripts/woo-sync.ts",
     "brand:onboard": "node --env-file-if-exists=.env scripts/brand-onboard.ts",
     "brand:deploy": "node --env-file-if-exists=.env scripts/brand-deploy.ts",
     "brand:status": "node --env-file-if-exists=.env scripts/brand-status.ts"
