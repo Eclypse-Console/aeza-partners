@@ -68,6 +68,10 @@ model ShopifyStore {
   brandProfile    BrandProfile? @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
   status          String        @default("pending") // pending | connected | uninstalled
   publishMode     String        @default("selected") // selected | all
+  // Sizes this brand sells on Aeza (e.g. ["S","M","L","XL","2XL"]). Empty =
+  // every size. Other variants stay in the Shopify mirror but are left out of
+  // the catalog, cart resolution and order creation (catalog/normalize.ts sizeAllowed).
+  allowedSizes    String[]      @default([])
   installedAt     DateTime?
   uninstalledAt   DateTime?
   lastFullSyncAt  DateTime?

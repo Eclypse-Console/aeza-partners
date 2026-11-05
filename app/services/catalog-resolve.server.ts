@@ -2,6 +2,7 @@ import prisma from "../db.server";
 import type { AdminGraphqlClient } from "../models/products.server";
 import { runAdminQuery } from "../models/products.server";
 import { isLiveOnAeza } from "./aeza-catalog.server";
+import { sizeAllowed } from "./catalog/normalize";
 
 // Resolves what the main Aeza backend has in a cart (product handle + size)
 // to the brand's real Shopify variant, with LIVE price and stock read from
@@ -53,7 +54,7 @@ const toPaise = (amount: string | null) =>
 const NODES_PAGE_SIZE = 250;
 
 /** Size of a variant: its "Size" option, else its only option value / title. */
-function sizeOf(variant: { title: string; options: unknown }): string {
+export function sizeOf(variant: { title: string; options: unknown }): string {
   const options = (variant.options ?? {}) as Record<string, string>;
   const sizeKey = Object.keys(options).find((name) => norm(name).includes("size"));
   if (sizeKey) return options[sizeKey];
@@ -103,10 +104,19 @@ export async function resolveCartItems(
   items: ResolveRequestItem[],
 ): Promise<{ items: ResolvedItem[]; sizes: Record<string, SizeOption[]> }> {
   const handles = [...new Set(items.map((item) => item.handle))];
-  const products = await prisma.shopifyProduct.findMany({
-    where: { shop, handle: { in: handles }, deletedAt: null },
-    include: { variants: { orderBy: { id: "asc" } } },
-  });
+  const store = await prisma.shopifyStore.findUnique({ where: { shop }, select: { allowedSizes: true } });
+  const allowedSizes = store?.allowedSizes ?? [];
+  // Sizes the brand doesn't sell on Aeza are invisible here: not offered,
+  // not matched (SIZE_NOT_FOUND), and never picked as the only variant.
+  const products = (
+    await prisma.shopifyProduct.findMany({
+      where: { shop, handle: { in: handles }, deletedAt: null },
+      include: { variants: { orderBy: { id: "asc" } } },
+    })
+  ).map((product) => ({
+    ...product,
+    variants: product.variants.filter((variant) => sizeAllowed(sizeOf(variant), allowedSizes)),
+  }));
   const byHandle = new Map(products.map((product) => [product.handle, product]));
 
   const live = await fetchLiveVariants(

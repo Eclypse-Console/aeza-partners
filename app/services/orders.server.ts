@@ -3,6 +3,8 @@ import prisma from "../db.server";
 import { runAdminQuery } from "../models/products.server";
 import { unauthenticated } from "../shopify.server";
 import { isLiveOnAeza } from "./aeza-catalog.server";
+import { sizeOf } from "./catalog-resolve.server";
+import { sizeAllowed } from "./catalog/normalize";
 
 // Creates a paid order on a brand's Shopify store for an order the customer
 // already paid for on Aeza. Idempotent per (shop, aezaOrderId):
@@ -87,6 +89,13 @@ export async function createAezaOrder(input: OrderRequest): Promise<OrderResult>
     .map((variant) => variant.variantId);
   if (unavailable.length > 0) {
     return fail(422, "product_not_available", { variantIds: unavailable });
+  }
+  // Sizes the brand doesn't sell on Aeza (ShopifyStore.allowedSizes).
+  const excludedSizes = variants
+    .filter((variant) => !sizeAllowed(sizeOf(variant), store.allowedSizes))
+    .map((variant) => variant.variantId);
+  if (excludedSizes.length > 0) {
+    return fail(422, "size_not_available", { variantIds: excludedSizes });
   }
 
   // Claim the aezaOrderId so concurrent requests can't both create it.
