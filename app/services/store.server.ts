@@ -15,37 +15,60 @@ export async function markStoreConnected(
   shop: string,
   admin: AdminGraphqlClient,
 ): Promise<void> {
-  const store = await prisma.shopifyStore.findUnique({ where: { shop } });
-  if (!store || store.status === "connected") return;
-
-  const brandProfile = await prisma.brandProfile.findUnique({
+  const store = await prisma.shopifyStore.findUnique({
     where: { shop },
-    select: { id: true },
+    include: { brandProfile: true },
   });
+  if (!store) return;
 
-  await prisma.shopifyStore.update({
-    where: { shop },
-    data: {
-      status: "connected",
-      installedAt: new Date(),
-      uninstalledAt: null,
-      brandProfileId: store.brandProfileId ?? brandProfile?.id ?? null,
-    },
-  });
+  const isFirstConnection = store.status !== "connected";
 
-  // 1. Automatically create Clerk account, store details in DB, and email credentials
-  try {
-    await autoOnboardBrandOnInstall(shop, admin);
-  } catch (error) {
-    console.error(`Failed to auto-onboard brand for ${shop}:`, error);
+  if (isFirstConnection) {
+    const brandProfile = await prisma.brandProfile.findUnique({
+      where: { shop },
+      select: { id: true },
+    });
+
+    await prisma.shopifyStore.update({
+      where: { shop },
+      data: {
+        status: "connected",
+        installedAt: new Date(),
+        uninstalledAt: null,
+        brandProfileId: store.brandProfileId ?? brandProfile?.id ?? null,
+      },
+    });
+  }
+
+  // 1. Automatically create Clerk account, store details in DB, and email credentials.
+  // Runs if:
+  //   a) It is the first connection, OR
+  //   b) BrandProfile lacks a clerkId, OR
+  //   c) Store lacks a brandProfileId link.
+  const needsOnboarding =
+    isFirstConnection ||
+    !store.brandProfileId ||
+    !store.brandProfile?.clerkId;
+
+  if (needsOnboarding) {
+    try {
+      console.log(
+        `[markStoreConnected] Running automatic onboarding for ${shop} (isFirstConnection=${isFirstConnection}, hasClerkId=${!!store.brandProfile?.clerkId})...`,
+      );
+      await autoOnboardBrandOnInstall(shop, admin);
+    } catch (error) {
+      console.error(`Failed to auto-onboard brand for ${shop}:`, error);
+    }
   }
 
   // 2. A failed sync kick-off must not break the install; the nightly re-sync
   // picks the store up again.
-  try {
-    await startFullProductSync(admin, shop);
-  } catch (error) {
-    console.error(`Failed to start initial product sync for ${shop}:`, error);
+  if (isFirstConnection) {
+    try {
+      await startFullProductSync(admin, shop);
+    } catch (error) {
+      console.error(`Failed to start initial product sync for ${shop}:`, error);
+    }
   }
 }
 
