@@ -215,6 +215,26 @@ export function normalizeSizeToken(raw: string | null | undefined): string | nul
   return token;
 }
 
+/**
+ * Whether a size may be sold on Aeza under a store's size allowlist
+ * (ShopifyStore.allowedSizes). An empty or missing list allows every size.
+ * Both sides are normalized, so "2XL", "XXL" and " 2xl" are the same size.
+ */
+export function sizeAllowed(size: string | null | undefined, allowed: readonly string[] | null | undefined): boolean {
+  if (!allowed || allowed.length === 0) return true;
+  const token = allowlistToken(size);
+  if (!token) return false;
+  return allowed.some((entry) => allowlistToken(entry) === token);
+}
+
+// Spelled-out sizes some brands use ("Small", "Medium"), only for allowlist matching.
+const WORD_SIZES: Record<string, string> = { SMALL: "S", MEDIUM: "M", LARGE: "L", "EXTRA LARGE": "XL", "EXTRA SMALL": "XS" };
+
+function allowlistToken(size: string | null | undefined): string | null {
+  const token = normalizeSizeToken(size);
+  return token ? WORD_SIZES[token] ?? token : null;
+}
+
 /** Standardizes and orders sizes the way a shopper reads them (XS, S, M, L, XL), numbers ascending. */
 export function sortSizes(sizes: string[]): string[] {
   const normalizedList: string[] = [];

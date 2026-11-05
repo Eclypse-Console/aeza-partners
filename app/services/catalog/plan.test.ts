@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { planCatalog } from "./plan.ts";
 import type { MetaobjectInput, PlanInput, ProductRow, ShopifyProductInput, ShopifyVariantInput } from "./plan.ts";
-import { categoryFromShopify, chooseGender, cleanLegacyScalar, imageIdentity, normalizeSizeToken, sortSizes } from "./normalize.ts";
+import { categoryFromShopify, chooseGender, cleanLegacyScalar, imageIdentity, normalizeSizeToken, sizeAllowed, sortSizes } from "./normalize.ts";
 
 const CDN = "https://cdn.shopify.com/s/files/1/0001/files/";
 const SHOP = "test-brand.myshopify.com";
@@ -478,4 +478,65 @@ test("normalizers", () => {
   assert.equal(normalizeSizeToken("Default Title"), null);
   assert.equal(normalizeSizeToken("One Size"), "FREE SIZE");
   assert.equal(categoryFromShopify("Jeans", "Ocean jeans", "", new Set(["Trousers"])), null, "unknown categories are left for AI");
+});
+
+// ------------------------------------------------- size allowlist (per store) ---
+
+const S_TO_2XL = ["S", "M", "L", "XL", "2XL"];
+const FULL_RUN = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "12XL"];
+
+test("sizeAllowed: empty allowlist allows every size; spellings of 2XL match", () => {
+  assert.equal(sizeAllowed("XS", []), true);
+  assert.equal(sizeAllowed("XS", undefined), true);
+  assert.equal(sizeAllowed("XS", S_TO_2XL), false);
+  assert.equal(sizeAllowed("2XL", S_TO_2XL), true);
+  assert.equal(sizeAllowed("XXL", S_TO_2XL), true);
+  assert.equal(sizeAllowed(" xl ", S_TO_2XL), true);
+  assert.equal(sizeAllowed("3XL", S_TO_2XL), false);
+  assert.equal(sizeAllowed("12XL", S_TO_2XL), false);
+  assert.equal(sizeAllowed("6XL", S_TO_2XL), false);
+  assert.equal(sizeAllowed(null, S_TO_2XL), false);
+  assert.equal(sizeAllowed("Medium", S_TO_2XL), true);
+  assert.equal(sizeAllowed("Small", S_TO_2XL), true);
+  assert.equal(sizeAllowed("Custom Size", S_TO_2XL), false);
+});
+
+test("allowlist: only S-2XL reach the catalog; prices and stock ignore other sizes", () => {
+  const variants = FULL_RUN.map((size) =>
+    variant({ size, price: size === "XS" ? "500.00" : size === "6XL" ? "9000.00" : "2000.00", inventoryQuantity: size === "S" ? 0 : 10 }),
+  );
+  const result = plan({ shopifyProducts: [product({ variants })], allowedSizes: S_TO_2XL });
+  const [row] = result.rows;
+  assert.deepEqual(row.sizes, ["S", "M", "L", "XL", "XXL"]);
+  assert.deepEqual(row.sizes_in_stock, ["M", "L", "XL", "XXL"]);
+  assert.equal(row.price, "2000.00");
+  assert.equal(row.max_price, "2000.00");
+  assert.equal(row.stock, 40);
+  assert.deepEqual(result.variants.map((v) => v.size), ["S", "M", "L", "XL", "XXL"]);
+  assert.equal((row.variants as unknown[]).length, 5);
+});
+
+test("allowlist: product with only excluded sizes is not built and its old row is removed", () => {
+  const p = product({ variants: [variant({ size: "XS" }), variant({ size: "3XL" })] });
+  const existing = legacy({ shopify_product_id: p.productId, color_key: "", handle: p.handle });
+  const result = plan({ shopifyProducts: [p], existingRows: [existing], allowedSizes: S_TO_2XL });
+  assert.equal(result.rows.length, 0);
+  assert.deepEqual(result.deletes, [existing.id]);
+});
+
+test("no allowlist: every size is kept (other brands unaffected)", () => {
+  const variants = FULL_RUN.map((size) => variant({ size }));
+  for (const allowedSizes of [undefined, []]) {
+    const result = plan({ shopifyProducts: [product({ variants })], allowedSizes });
+    assert.equal(result.variants.length, FULL_RUN.length);
+    assert.ok((result.rows[0].sizes as string[]).includes("XS"));
+  }
+});
+
+test("allowlist: 'Size for Blazers' / 'Size ' option names still count as size", () => {
+  const variants = ["XS", "S", "2XL"].map((size) =>
+    variant({ selectedOptions: [{ name: "Size for Blazers", value: size }], title: size }),
+  );
+  const result = plan({ shopifyProducts: [product({ variants })], allowedSizes: S_TO_2XL });
+  assert.deepEqual(result.variants.map((v) => v.size), ["S", "XXL"]);
 });

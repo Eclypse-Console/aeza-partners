@@ -35,6 +35,7 @@ import {
   normalizeNeckline,
   slugValue,
   normalizeSizeToken,
+  sizeAllowed,
   sortSizes,
   titleCase,
 } from "./normalize.ts";
@@ -110,6 +111,8 @@ export type PlanInput = {
    * rows are removed.
    */
   removedProductIds?: Set<string>;
+  /** The store's size allowlist (ShopifyStore.allowedSizes); empty or missing = every size. */
+  allowedSizes?: string[];
   now?: Date;
 };
 
@@ -316,6 +319,12 @@ type Group = {
 };
 
 /** One group per colour when the product has a colour option with several values. */
+/** The product with only the variants whose size the store sells on Aeza (unchanged when there's no allowlist). */
+function onlyAllowedSizes(product: ShopifyProductInput, allowed: string[] | undefined): ShopifyProductInput {
+  if (!allowed || allowed.length === 0) return product;
+  return { ...product, variants: product.variants.filter((variant) => sizeAllowed(sizeOf(variant), allowed)) };
+}
+
 function groupsOf(product: ShopifyProductInput): Group[] {
   const colour = product.options.find((o) => /colou?r/i.test(o.name) && o.values.length > 1);
   if (!colour) {
@@ -776,12 +785,19 @@ export function planCatalog(input: PlanInput): PlanResult {
     result.notes.push({ handle: row.handle ?? null, colorKey: row.color_key ?? "", note: `removed from the catalog (${why})` });
   };
 
-  for (const product of input.shopifyProducts) {
+  for (const listed of input.shopifyProducts) {
     // Only published products (active or draft, not deleted) are in the catalog.
-    if (!inCatalog(product)) {
-      existingOf(product.productId).forEach((row) =>
-        remove(row, product.deletedAt ? "deleted in Shopify" : !product.published ? "unpublished" : `status ${product.status}`),
+    if (!inCatalog(listed)) {
+      existingOf(listed.productId).forEach((row) =>
+        remove(row, listed.deletedAt ? "deleted in Shopify" : !listed.published ? "unpublished" : `status ${listed.status}`),
       );
+      continue;
+    }
+    // Sizes the brand doesn't sell on Aeza are left out entirely (sizes,
+    // prices, stock and variant rows); a product with none left is removed.
+    const product = onlyAllowedSizes(listed, input.allowedSizes);
+    if (product.variants.length === 0 && listed.variants.length > 0) {
+      existingOf(listed.productId).forEach((row) => remove(row, "no sizes the brand sells on Aeza"));
       continue;
     }
     const groups = groupsOf(product);

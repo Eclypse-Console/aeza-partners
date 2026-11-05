@@ -113,6 +113,7 @@ export async function runCatalogSync(options: CatalogRunOptions): Promise<Catalo
     knownCategories: await loadKnownCategories(legacy),
     legacyUsage: usage,
     removedProductIds,
+    allowedSizes: store?.allowedSizes ?? [],
   });
 
   if (!dryRun) await writePlan(legacy, shop, plan);
