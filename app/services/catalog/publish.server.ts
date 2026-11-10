@@ -95,7 +95,7 @@ export async function syncNewBrandToLegacy(
   // Update store in Ops DB and catalog product brand_id in main DB if missing
   if (brandId) {
     await legacy.$executeRawUnsafe(
-      `UPDATE shopify_connector."CatalogProduct" SET brand_id = $1::uuid, brand = $2 WHERE shop = $3 AND (brand_id IS NULL OR brand != $2)`,
+      `UPDATE shopify_connector."Products" SET brand_id = $1::uuid, brand = $2 WHERE shop = $3 AND (brand_id IS NULL OR brand != $2)`,
       brandId,
       brandName,
       shop,
@@ -151,7 +151,7 @@ export async function syncNewBrandToLegacy(
 export async function publishShop(ops: PrismaClient, legacy: PrismaClient, shop: string): Promise<number> {
   await ensurePublishedTable(legacy);
   const rows = await legacy.$queryRawUnsafe<Array<Record<string, unknown>>>(
-    `SELECT ${selectList(PUBLISHED_COLUMNS)} FROM shopify_connector."CatalogProduct" WHERE shop = $1 AND shopify_status = 'ACTIVE' AND is_active = true`,
+    `SELECT ${selectList(PUBLISHED_COLUMNS)} FROM shopify_connector."Products" WHERE shop = $1 AND shopify_status = 'ACTIVE' AND is_active = true`,
     shop,
   );
   for (let start = 0; start < rows.length; start += BATCH) {

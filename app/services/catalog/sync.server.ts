@@ -232,7 +232,7 @@ export async function loadKnownCategories(legacy: PrismaClient): Promise<Set<str
 /** The shop's catalog rows and links (all, or for just these Shopify products). */
 export async function loadExisting(catalogDb: PrismaClient, shop: string, productIds?: string[]) {
   const rows = await catalogDb.$queryRawUnsafe<Array<Record<string, unknown>>>(
-    `SELECT ${selectList(CATALOG_COLUMNS)} FROM shopify_connector."CatalogProduct"
+    `SELECT ${selectList(CATALOG_COLUMNS)} FROM shopify_connector."Products"
       WHERE shop = $1 ${productIds ? "AND shopify_product_id = ANY($2::text[])" : ""}`,
     ...(productIds ? [shop, productIds] : [shop]),
   );
@@ -252,7 +252,7 @@ export async function writePlan(catalogDb: PrismaClient, shop: string, plan: Pla
     await catalogDb.catalogProduct.deleteMany({ where: { shop, id: { in: plan.deletes } } });
   }
   for (let start = 0; start < plan.rows.length; start += BATCH) {
-    const { sql, params } = upsertSql(`shopify_connector."CatalogProduct"`, CATALOG_COLUMNS, plan.rows.slice(start, start + BATCH), {
+    const { sql, params } = upsertSql(`shopify_connector."Products"`, CATALOG_COLUMNS, plan.rows.slice(start, start + BATCH), {
       vectorType: OPS_VECTOR_TYPE,
     });
     await catalogDb.$executeRawUnsafe(sql, ...params);

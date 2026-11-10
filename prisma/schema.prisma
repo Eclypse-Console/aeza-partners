@@ -309,6 +309,7 @@ model CatalogProduct {
   @@unique([shop, shopify_product_id, color_key])
   @@index([shop, live_on_aeza])
   @@index([handle])
+  @@map("Products")
   @@schema("shopify_connector")
 }
 
