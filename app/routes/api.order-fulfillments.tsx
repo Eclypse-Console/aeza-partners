@@ -3,6 +3,8 @@ import db from "../db.server";
 import { hasValidBearerToken } from "../lib/auth.server";
 import { runAdminQuery } from "../models/products.server";
 import { normalizeShopDomain, unauthenticated } from "../shopify.server";
+import { wooShopOf } from "../services/woo/checkout";
+import { wooFulfillments } from "../services/woo/orders.server";
 
 // GET /api/order-fulfillments?shop=<shop>&aezaOrderId=<id>, called by the main
 // Aeza backend to show tracking and delivery status. Read live from Shopify,
@@ -28,13 +30,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   const url = new URL(request.url);
-  const shop = normalizeShopDomain(url.searchParams.get("shop"));
+  const wooShop = wooShopOf(url.searchParams.get("shop"));
+  const shop = wooShop ?? normalizeShopDomain(url.searchParams.get("shop"));
   const aezaOrderId = url.searchParams.get("aezaOrderId") ?? "";
   if (!shop || !aezaOrderId) {
     return Response.json(
       { error: "invalid_request", message: "shop and aezaOrderId are required" },
       { status: 400 },
     );
+  }
+
+  // WooCommerce stores (services/woo): the order's status read from the Woo API.
+  if (wooShop) {
+    try {
+      const status = await wooFulfillments(wooShop, aezaOrderId);
+      return status ? Response.json(status) : Response.json({ error: "not_found" }, { status: 404 });
+    } catch (error) {
+      console.error(`Fulfillments lookup failed for ${shop} ${aezaOrderId}:`, error);
+      return Response.json({ error: "shopify_unavailable" }, { status: 502 });
+    }
   }
 
   const order = await db.shopifyOrder.findUnique({

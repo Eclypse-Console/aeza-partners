@@ -3,6 +3,8 @@ import { hasValidBearerToken } from "../lib/auth.server";
 import { normalizeShopDomain } from "../shopify.server";
 import type { OrderRequest } from "../services/orders.server";
 import { createAezaOrder } from "../services/orders.server";
+import { WOO_VARIANT_GID, wooShopOf } from "../services/woo/checkout";
+import { createWooOrder } from "../services/woo/orders.server";
 
 // POST /api/orders, called server-to-server by the main Aeza backend after a
 // customer has paid. Auth: Authorization: Bearer <MAIN_BACKEND_API_KEY>.
@@ -33,7 +35,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   }
 
-  const result = await createAezaOrder(parsed);
+  // WooCommerce stores (services/woo): same contract, order created through the Woo API.
+  const result = wooShopOf(parsed.shop) ? await createWooOrder(parsed) : await createAezaOrder(parsed);
   return Response.json(result.body, { status: result.status });
 };
 
@@ -46,8 +49,10 @@ function parseOrderRequest(body: unknown): OrderRequest | { error: string } {
   if (!body || typeof body !== "object") return { error: "body must be an object" };
   const input = body as Record<string, unknown>;
 
-  const shop = normalizeShopDomain(input.shop as string);
+  const wooShop = wooShopOf(input.shop);
+  const shop = wooShop ?? normalizeShopDomain(input.shop as string);
   if (!shop) return { error: "shop must be a *.myshopify.com domain" };
+  const variantPattern = wooShop ? WOO_VARIANT_GID : /^gid:\/\/shopify\/ProductVariant\/\d+$/;
   // It becomes a Shopify order tag, and Shopify tags are at most 40 characters.
   if (!isText(input.aezaOrderId, 40) || !/^[A-Za-z0-9_-]+$/.test(input.aezaOrderId as string)) {
     return { error: "aezaOrderId is required (max 40 characters: letters, digits, - and _)" };
@@ -64,7 +69,7 @@ function parseOrderRequest(body: unknown): OrderRequest | { error: string } {
     const price = String(item?.price ?? "");
     if (
       !isText(item?.variantId) ||
-      !/^gid:\/\/shopify\/ProductVariant\/\d+$/.test(item.variantId) ||
+      !variantPattern.test(item.variantId) ||
       !Number.isInteger(item.quantity) ||
       (item.quantity as number) < 1 ||
       !/^\d+(\.\d{1,2})?$/.test(price)

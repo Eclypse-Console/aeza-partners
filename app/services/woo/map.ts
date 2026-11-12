@@ -100,11 +100,11 @@ function colourValues(product: WooProduct): string[] {
   return product.attributes.find((a) => COLOUR_ATTRIBUTE.test(a.name))?.options ?? [];
 }
 
-function colourOf(variation: WooVariation): string | null {
+export function colourOf(variation: WooVariation): string | null {
   return variation.attributes.find((a) => COLOUR_ATTRIBUTE.test(a.name))?.option ?? null;
 }
 
-function stockOf(item: WooStock, parent: WooStock) {
+export function stockOf(item: WooStock, parent: WooStock) {
   const source = item.manage_stock === "parent" ? parent : item;
   const inventoryPolicy = source.backorders === "no" ? "DENY" : "CONTINUE";
   if (source.manage_stock === true) {
@@ -117,7 +117,7 @@ function stockOf(item: WooStock, parent: WooStock) {
 }
 
 /** The sale price and MRP; Woo leaves regular_price equal to price when nothing is on sale. */
-function pricesOf(item: { price: string; regular_price: string }) {
+export function pricesOf(item: { price: string; regular_price: string }) {
   const onSale = item.regular_price !== "" && Number(item.regular_price) > Number(item.price);
   return { price: item.price, compareAtPrice: onSale ? item.regular_price : null };
 }

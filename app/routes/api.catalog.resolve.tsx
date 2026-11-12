@@ -3,6 +3,8 @@ import { hasValidBearerToken } from "../lib/auth.server";
 import { normalizeShopDomain, unauthenticated } from "../shopify.server";
 import type { ResolveRequestItem } from "../services/catalog-resolve.server";
 import { resolveCartItems } from "../services/catalog-resolve.server";
+import { wooShopOf } from "../services/woo/checkout";
+import { resolveWooCart } from "../services/woo/orders.server";
 
 // POST /api/catalog/resolve, called server-to-server by the main Aeza backend
 // when it prices a cart and right before payment.
@@ -28,7 +30,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return Response.json({ error: "invalid_json" }, { status: 400 });
   }
 
-  const shop = normalizeShopDomain(body.shop as string);
+  // WooCommerce stores (services/woo) answer the same request from the Woo API.
+  const wooShop = wooShopOf(body.shop);
+  const shop = wooShop ?? normalizeShopDomain(body.shop as string);
   const items = Array.isArray(body.items) ? body.items : null;
   if (
     !shop ||
@@ -50,6 +54,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       },
       { status: 400 },
     );
+  }
+
+  if (wooShop) {
+    try {
+      return Response.json(
+        await resolveWooCart((items as ResolveRequestItem[]).map((item) => ({ handle: item.handle, size: item.size ?? null }))),
+      );
+    } catch (error) {
+      console.error(`Resolve failed for ${shop}:`, error);
+      return Response.json({ error: "shopify_unavailable" }, { status: 502 });
+    }
   }
 
   let admin;
