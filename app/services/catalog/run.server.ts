@@ -1,14 +1,14 @@
-// One catalog run for one store: Shopify mirror + legacy products -> plan ->
-// CatalogProduct / CatalogVariant / CatalogProductLink.
+// One catalog run for one store: Shopify mirror -> plan ->
+// shopify_connector."Products" / CatalogVariant / CatalogProductLink
+// (all in PRODUCTS_DB).
 //
-// Only published products (active or draft) get catalog rows; legacy rows only lend their
-// id and AI work to a matching Shopify product.
+// Only published products (active or draft) get catalog rows. Products
+// already in the catalog keep their id and AI work; new ones get a new id.
+// The old products table (now public.old_products, a backup) isn't read.
 //
-// Full run (no productIds): every product in the mirror, matched against
-// every legacy row of the brand. Done after each full Shopify sync.
-// Incremental run (productIds): just those products, for webhooks and
-// publish choices. Products already in the catalog keep their link; legacy
-// rows are only loaded for products that aren't in the catalog yet.
+// Full run (no productIds): every product in the mirror. Done after each
+// full Shopify sync. Incremental run (productIds): just those products, for
+// webhooks and publish choices.
 // Either way a row is removed only when the live sync (ShopifyProduct) says
 // its product is deleted or unpublished, never because the mirror lacks it.
 
@@ -20,8 +20,6 @@ import {
   detectLegacyBrand,
   loadExisting,
   loadKnownCategories,
-  loadLegacyRows,
-  loadLegacyUsage,
   loadShopifyProducts,
   metaobjectIds,
   resolveMetaobjects,
@@ -32,7 +30,7 @@ import type { GraphqlRequest } from "./full-products.server.ts";
 
 export type CatalogRunOptions = {
   ops: PrismaClient;
-  /** The main products database (PRODUCTS_DB); only read. */
+  /** The main products database (PRODUCTS_DB), where shopify_connector."Products" lives. */
   legacy: PrismaClient;
   shop: string;
   graphql: GraphqlRequest;
@@ -61,22 +59,15 @@ export async function runCatalogSync(options: CatalogRunOptions): Promise<Catalo
   const existing = await loadExisting(legacy, shop, productIds);
   const store = await ops.shopifyStore.findUnique({ where: { shop }, include: { brandProfile: true } });
 
-  // The legacy brand: found by handle on a full run and remembered on the
-  // store, so incremental runs (a few handles) can't pick a different one.
-  let brand: LegacyBrand | null =
-    !full && store?.legacyBrandName ? { id: store.legacyBrandId, name: store.legacyBrandName, matchedHandles: 0 } : null;
-  if (!brand) {
-    brand = await detectLegacyBrand(legacy, shopifyProducts.map((p) => p.handle), options.legacyBrandName ?? store?.legacyBrandName ?? undefined);
+  // The brand: what the shop's catalog rows already carry (or the CLI
+  // override), else the brand saved on the store at onboarding.
+  let brand: LegacyBrand | null = await detectLegacyBrand(legacy, shop, options.legacyBrandName);
+  if (!brand && store?.legacyBrandId) {
+    brand = { id: store.legacyBrandId, name: store.legacyBrandName, matchedHandles: 0 };
   }
-  if (brand && full && !dryRun) {
+  if (brand?.id && full && !dryRun && (store?.legacyBrandId !== brand.id || store?.legacyBrandName !== brand.name)) {
     await ops.shopifyStore.update({ where: { shop }, data: { legacyBrandId: brand.id, legacyBrandName: brand.name } });
   }
-
-  // Incremental runs only need legacy rows for products not yet in the catalog.
-  const alreadyInCatalog = new Set(existing.rows.map((r) => r.shopify_product_id));
-  const newHandles = full ? undefined : shopifyProducts.filter((p) => !alreadyInCatalog.has(p.productId)).map((p) => p.handle);
-  const legacyRows = brand ? await loadLegacyRows(legacy, brand, newHandles) : [];
-  const usage = await loadLegacyUsage(legacy, legacyRows.map((r) => r.id));
 
   const ids = metaobjectIds(shopifyProducts);
   const { values: metaobjects, unresolved } = await resolveMetaobjects(legacy, shop, ids, async (batch) =>
@@ -106,12 +97,12 @@ export async function runCatalogSync(options: CatalogRunOptions): Promise<Catalo
     shop,
     brand: { id: brand?.id ?? null, name: brand?.name ?? store?.brandProfile?.brandName ?? null },
     shopifyProducts,
-    legacyRows,
+    // The old products table is retired (public.old_products, a backup).
+    legacyRows: [],
     existingRows: existing.rows,
     existingLinks: existing.links,
     metaobjects,
     knownCategories: await loadKnownCategories(legacy),
-    legacyUsage: usage,
     removedProductIds,
     allowedSizes: store?.allowedSizes ?? [],
   });
@@ -120,7 +111,7 @@ export async function runCatalogSync(options: CatalogRunOptions): Promise<Catalo
   return {
     plan,
     brand,
-    legacyRows: legacyRows.length,
+    legacyRows: 0,
     products: shopifyProducts.length,
     missingFromMirror,
     metaobjects: { total: ids.length, unresolved },

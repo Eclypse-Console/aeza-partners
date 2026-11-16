@@ -197,7 +197,7 @@ export async function createOrUpdateClerkUser(
 }
 
 /**
- * Saves or updates brand in public.brands (PRODUCTS_DB) and links shopify_connector.ShopifyStore.
+ * Saves or updates brand in shopify_connector.brands (PRODUCTS_DB) and links shopify_connector.ShopifyStore.
  */
 export async function saveBrandInProductDb(
   shop: string,
@@ -216,7 +216,7 @@ export async function saveBrandInProductDb(
     // 1. Check if brand exists by clerk_user_id or brand_name or contact_email
     const existingBrands = await legacy.$queryRawUnsafe<Array<{ id: string; brand_name: string }>>(
       `SELECT id::text, brand_name 
-       FROM public.brands 
+       FROM shopify_connector.brands 
        WHERE clerk_user_id = $1 
           OR LOWER(TRIM(brand_name)) = LOWER(TRIM($2)) 
           OR contact_email = $3
@@ -233,7 +233,7 @@ export async function saveBrandInProductDb(
       brandId = existingBrands[0].id;
       finalBrandName = existingBrands[0].brand_name;
       await legacy.$executeRawUnsafe(
-        `UPDATE public.brands 
+        `UPDATE shopify_connector.brands 
          SET clerk_user_id = $1, 
              contact_email = $2, 
              contact_phone = COALESCE($3, contact_phone), 
@@ -249,7 +249,7 @@ export async function saveBrandInProductDb(
       console.log(`[brand-onboarding] Updated existing brand in DB: ${finalBrandName} (${brandId})`);
     } else {
       const inserted = await legacy.$queryRawUnsafe<Array<{ id: string; brand_name: string }>>(
-        `INSERT INTO public.brands (
+        `INSERT INTO shopify_connector.brands (
            id, clerk_user_id, brand_name, contact_email, contact_phone, 
            website, slug, is_onboarded, is_aeza_catalog, created_at, updated_at
          ) VALUES (
@@ -481,7 +481,7 @@ export async function autoOnboardBrandOnInstall(
       shop,
     );
 
-    // 4. Save/update brand in public.brands (PRODUCTS_DB)
+    // 4. Save/update brand in shopify_connector.brands (PRODUCTS_DB)
     const { brandId, brandName } = await saveBrandInProductDb(
       shop,
       clerkUserId,
