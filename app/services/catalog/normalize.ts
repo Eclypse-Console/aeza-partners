@@ -145,6 +145,103 @@ export function normalizeFitType(labels: string[]): string | null {
 
 const SET_PATTERN = /\bco-?\s?ord\b|\bcoord\b|\bset\b/i;
 
+// Garment nouns that make a title a top/one-piece, so a bottoms word in it is
+// only a mention ("shirt with pants"). "dress pants" is still a pant.
+const TOP_TITLE_PATTERN =
+  /\b(shirts?|t-?shirts?|tees?|tops?|kurtas?|kurtis?|blouses?|jackets?|blazers?|hoodies?|sweatshirts?|tunics?|kaftans?|sarees?|jumpsuits?)\b|\bdress(es)?\b(?!\s+(pants?|trousers?))/i;
+const BOTTOM_TITLE_PATTERNS: Array<[RegExp, string]> = [
+  [/\bjeans?\b/i, "Jeans"],
+  [/\b(shorts|jorts)\b/i, "Shorts"],
+  [/\b(pants?|trousers?|joggers?|chinos?|palazzos?|culottes?)\b/i, "Trousers"],
+];
+
+/** Categories that a title naming a bottom garment contradicts. */
+const TOP_CATEGORIES = new Set([
+  "Shirts", "T-Shirts", "Polo Shirts", "Tops", "Tank Tops", "Crop Tops", "Blouses",
+  "Kurtas", "Kurtis", "Tunics", "Hoodies & Sweatshirts", "Sweatshirts", "Jackets",
+  "Blazers", "Vests & Waistcoats", "Dresses", "Kaftans",
+]);
+
+/**
+ * "Beige Drawstring Linen Pant" -> "Trousers". Answers only when the title
+ * names a bottom garment and no top or set, so it can safely overrule a
+ * merchant product type the brand copied from a shirt listing.
+ */
+export function bottomCategoryFromTitle(title: string | null | undefined): string | null {
+  const t = title ?? "";
+  if (!t || SET_PATTERN.test(t) || TOP_TITLE_PATTERN.test(t)) return null;
+  for (const [pattern, category] of BOTTOM_TITLE_PATTERNS) if (pattern.test(t)) return category;
+  return null;
+}
+
+/** The bottoms category the title implies when the current category is a top; else null. */
+export function titleContradictsCategory(title: string | null | undefined, category: string | null | undefined): string | null {
+  const fromTitle = bottomCategoryFromTitle(title);
+  if (!fromTitle || !category) return null;
+  return TOP_CATEGORIES.has(normalizeCategory(category) ?? category) ? fromTitle : null;
+}
+
+// Colour word -> the families it can belong to. Loose on purpose: "sage" is a
+// green, "khaki" is a beige or a brown, so near-synonyms never count as a conflict.
+const COLOUR_FAMILIES: Record<string, string[]> = {
+  black: ["black"], charcoal: ["black", "grey"], onyx: ["black"],
+  white: ["white"], ivory: ["white"], cream: ["white"], ecru: ["white"], beige: ["white", "brown"],
+  khaki: ["white", "brown", "green"], camel: ["white", "brown"], tan: ["white", "brown"], natural: ["white", "brown"],
+  brown: ["brown"], rust: ["brown", "red", "orange"], taupe: ["brown", "grey"], coffee: ["brown"], chocolate: ["brown"],
+  grey: ["grey"], gray: ["grey"], silver: ["grey"], smoke: ["grey"], ash: ["grey"],
+  navy: ["blue"], blue: ["blue"], teal: ["blue", "green"], turquoise: ["blue", "green"], indigo: ["blue", "purple"],
+  denim: ["blue"], azure: ["blue"],
+  green: ["green"], olive: ["green", "brown"], sage: ["green", "grey"], mint: ["green"], emerald: ["green"],
+  red: ["red"], maroon: ["red", "brown", "purple"], burgundy: ["red", "purple"], wine: ["red", "purple"], crimson: ["red"],
+  pink: ["pink"], peach: ["pink", "orange"], coral: ["pink", "orange", "red"], rose: ["pink"], blush: ["pink"], fuchsia: ["pink", "purple"],
+  purple: ["purple"], lavender: ["purple"], lilac: ["purple"], mauve: ["purple", "pink"], violet: ["purple"], plum: ["purple"], grape: ["purple"],
+  yellow: ["yellow"], mustard: ["yellow", "orange"], gold: ["yellow"], lemon: ["yellow"],
+  orange: ["orange"], amber: ["orange", "yellow"],
+};
+
+// Words that read as a colour in a title. Excludes words that usually describe
+// something else there ("denim", "rose" embroidery, "gold" zari, "smoke").
+const TITLE_COLOUR_WORDS = Object.keys(COLOUR_FAMILIES).filter(
+  (w) => !["denim", "rose", "gold", "silver", "smoke", "ash", "natural", "wine", "coffee", "chocolate", "lemon", "plum", "amber", "onyx"].includes(w),
+);
+const TITLE_COLOUR_PATTERN = new RegExp(`\\b(?:off\\s+)?(${TITLE_COLOUR_WORDS.join("|")})\\b`, "gi");
+
+function familiesOf(name: string): Set<string> {
+  const out = new Set<string>();
+  for (const word of name.toLowerCase().split(/[^a-z]+/)) for (const f of COLOUR_FAMILIES[word] ?? []) out.add(f);
+  return out;
+}
+
+/**
+ * The colour a title names, when it names exactly one colour family
+ * ("Midnight Black Classic Shirt" -> Black). Null when it names none, or
+ * several that don't share a family ("Black Shirt & White Pant").
+ */
+export function colourFromTitle(title: string | null | undefined): { name: string; families: Set<string> } | null {
+  const matches = [...(title ?? "").matchAll(TITLE_COLOUR_PATTERN)].map((m) => m[0]);
+  if (!matches.length) return null;
+  let common = familiesOf(matches[0]);
+  for (const m of matches.slice(1)) common = new Set([...common].filter((f) => familiesOf(m).has(f)));
+  if (!common.size) return null;
+  return { name: titleCase(matches[0].toLowerCase().replace(/\s+/g, " ").replace(/\bgray\b/, "grey")), families: common };
+}
+
+/**
+ * The title's colour, when the brand's colour names clearly contradict it
+ * (every name is a recognisable colour and none shares a family with the
+ * title's). Null when they agree or either side can't be judged.
+ */
+export function titleColourOverride(title: string | null | undefined, brandColours: string[]): string | null {
+  const fromTitle = colourFromTitle(title);
+  if (!fromTitle || !brandColours.length) return null;
+  for (const name of brandColours) {
+    const fams = familiesOf(name);
+    if (!fams.size) return null; // "Deep Taupe"-style names we can't judge
+    if ([...fams].some((f) => fromTitle.families.has(f))) return null;
+  }
+  return fromTitle.name;
+}
+
 /**
  * Category for a product without a legacy one. Shopify files co-ord sets
  * under "Trousers", so a title or product type that says "set" wins. Only
