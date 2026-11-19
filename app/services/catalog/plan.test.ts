@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { planCatalog } from "./plan.ts";
 import type { MetaobjectInput, PlanInput, ProductRow, ShopifyProductInput, ShopifyVariantInput } from "./plan.ts";
-import { categoryFromShopify, chooseGender, cleanLegacyScalar, imageIdentity, normalizeSizeToken, sizeAllowed, sortSizes } from "./normalize.ts";
+import { bottomCategoryFromTitle, categoryFromShopify, chooseGender, colourFromTitle, titleColourOverride, cleanLegacyScalar, imageIdentity, normalizeSizeToken, sizeAllowed, sortSizes } from "./normalize.ts";
 
 const CDN = "https://cdn.shopify.com/s/files/1/0001/files/";
 const SHOP = "test-brand.myshopify.com";
@@ -539,4 +539,101 @@ test("allowlist: 'Size for Blazers' / 'Size ' option names still count as size",
   );
   const result = plan({ shopifyProducts: [product({ variants })], allowedSizes: S_TO_2XL });
   assert.deepEqual(result.variants.map((v) => v.size), ["S", "XXL"]);
+});
+
+// ------------------------------------------------- title vs brand data ---
+
+const colourMeta = (label: string, id = `gid://m/colour-${label}`) => ({
+  metafields: [{ namespace: "shopify", key: "color-pattern", type: "list.metaobject_reference", value: [id] }],
+  metaobjects: metaobjects([{ id, type: "shopify--color-pattern", label, hex: "#000000" }]),
+});
+
+test("a pant copied from a shirt listing: title fixes category, colour and tags (Rawayi)", () => {
+  const old = legacy({
+    handle: "beige-drawstring-linen-pant",
+    product_category: "Shirts",
+    primary_colors: ["Black"],
+    base_color: ["black"],
+    body_part_tag: "top",
+    tags: ["shirts", "rawayi", "black", "linen", "men"],
+  });
+  const { metafields, metaobjects: mo } = colourMeta("Black");
+  const result = plan({
+    shopifyProducts: [product({
+      handle: "beige-drawstring-linen-pant",
+      title: "Beige Drawstring Linen Pant",
+      productType: "Shirts",
+      categoryName: "Traditional & Ceremonial Clothing",
+      metafields,
+    })],
+    legacyRows: [old],
+    metaobjects: mo,
+  });
+  const row = result.rows[0];
+  assert.equal(row.product_category, "Trousers");
+  assert.equal(row.field_sources.product_category, "title");
+  assert.deepEqual(row.primary_colors, ["Beige"]);
+  assert.deepEqual(row.base_color, ["beige"]);
+  assert.equal(row.field_sources.primary_colors, "title");
+  assert.equal(row.body_part_tag, null, "a stale 'top' body part is cleared for re-tagging");
+  assert.deepEqual([...row.tags].sort(), ["beige", "linen", "men", "rawayi", "trousers"]);
+  assert.ok(result.notes.some((n) => n.note.includes("contradicts the title")));
+  assert.ok(result.notes.some((n) => n.note.includes("title says Beige")));
+});
+
+test("a new pant whose merchant type says Shirts is filed as Trousers", () => {
+  const row = plan({
+    shopifyProducts: [product({ title: "Grey Drawstring Linen Pant", productType: "Shirts", categoryName: "Traditional & Ceremonial Clothing" })],
+  }).rows[0];
+  assert.equal(row.product_category, "Trousers");
+});
+
+test("title guards leave consistent or ambiguous products alone", () => {
+  const cases: Array<[string, string, string, string, string]> = [
+    // title, productType, metafield colour, expected category, expected colour
+    ["Navy Linen Shirt", "Shirts", "Navy Blue", "Shirts", "Navy Blue"],
+    ["White Kurta with Pants", "Shirts", "Off White", "Shirts", "Off White"],
+    ["Black Linen Pant", "Pants", "Black", "Trousers", "Black"],
+    ["Linen Shirt", "Shirts", "Olive", "Shirts", "Olive"],
+    ["Grey Linen Shirt", "Shirts", "Gray", "Shirts", "Gray"],
+  ];
+  for (const [title, productType, colour, category, expectedColour] of cases) {
+    const { metafields, metaobjects: mo } = colourMeta(colour);
+    const row = plan({
+      shopifyProducts: [product({ title, productType, categoryName: "Unknown", metafields })],
+      metaobjects: mo,
+    }).rows[0];
+    assert.equal(row.product_category, category, title);
+    assert.deepEqual(row.primary_colors, [expectedColour], title);
+  }
+});
+
+test("a black shirt tagged Navy Blue by the brand becomes Black", () => {
+  const { metafields, metaobjects: mo } = colourMeta("Navy Blue");
+  const row = plan({
+    shopifyProducts: [product({ title: "Midnight Black Textured Shirt", productType: "Shirts", categoryName: "Unknown", metafields })],
+    metaobjects: mo,
+  }).rows[0];
+  assert.deepEqual(row.primary_colors, ["Black"]);
+});
+
+test("title helpers", () => {
+  assert.equal(bottomCategoryFromTitle("Beige Drawstring Linen Pant"), "Trousers");
+  assert.equal(bottomCategoryFromTitle("Charcoal Dress Pants"), "Trousers");
+  assert.equal(bottomCategoryFromTitle("Relaxed Denim Jeans"), "Jeans");
+  assert.equal(bottomCategoryFromTitle("Shirt and Pant Co-ord Set"), null);
+  assert.equal(bottomCategoryFromTitle("Shirt Dress"), null);
+  assert.equal(colourFromTitle("Midnight Black Classic Shirt")?.name, "Black");
+  assert.equal(colourFromTitle("Off White Kurta")?.name, "Off White");
+  assert.equal(colourFromTitle("Gray Joggers")?.name, "Grey");
+  assert.equal(colourFromTitle("Linen Shirt"), null);
+  assert.equal(colourFromTitle("Black Shirt & White Loose Pant Combination"), null, "two colours: ambiguous");
+  // Brand colour contradicts the title only when no family is shared.
+  assert.equal(titleColourOverride("White Drawstring Linen Pant", ["Black"]), "White");
+  assert.equal(titleColourOverride("Navy Linen Shirt", ["Navy Blue"]), null);
+  assert.equal(titleColourOverride("Ivy frill top in sage", ["Green"]), null, "sage is a green");
+  assert.equal(titleColourOverride("Khaki Pleated Shorts", ["Beige"]), null);
+  assert.equal(titleColourOverride("Lavender Haze Co-ord Set", ["Purple"]), null);
+  assert.equal(titleColourOverride("Burgundy Plain Tshirt", ["Heather"]), null, "unrecognised brand name: keep it");
+  assert.equal(titleColourOverride("Signature Smoke Embroidered Black Shirt", ["Navy Blue"]), "Black");
 });

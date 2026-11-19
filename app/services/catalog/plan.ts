@@ -25,6 +25,8 @@ import {
   categoryFromMerchantType,
   categoryFromShopify,
   chooseGender,
+  titleColourOverride,
+  titleContradictsCategory,
   cleanLegacyScalar,
   determineProductType,
   imageIdentity,
@@ -542,6 +544,14 @@ function matchProduct(
 
 type Sources = Record<string, string>;
 
+/** Replace stale tags ("shirts", "black") after a value was corrected. */
+function swapTags(row: ProductRow, oldValues: string[], newValues: string[]) {
+  if (!Array.isArray(row.tags) || !row.tags.length) return;
+  const stale = new Set(oldValues.map((v) => v.toLowerCase()));
+  const kept = (row.tags as string[]).filter((t) => !stale.has(t.toLowerCase()));
+  row.tags = [...new Set([...kept, ...newValues.map((v) => v.toLowerCase())])];
+}
+
 function setField(row: ProductRow, sources: Sources, field: string, value: unknown, source: string) {
   row[field] = value;
   sources[field] = source;
@@ -668,7 +678,17 @@ function buildRow(
     setField(row, sources, "primary_colors", [titleCase(group.colorValue)], "shopify");
   } else if (colours?.complete) {
     const names = colours.entries.filter((e) => e.hex).map((e) => titleCase(e.label!));
-    if (names.length) setField(row, sources, "primary_colors", names, "shopify");
+    // Brands copy listings and leave the old colour behind ("White ... Pant"
+    // tagged Black). When the title's colour matches none of them, the title wins.
+    const fromTitle = titleColourOverride(product.title, names);
+    if (fromTitle) {
+      notes.push(`colour metafield says ${names.join(", ")} but the title says ${fromTitle}; using the title`);
+      swapTags(row, [...names, ...((row.primary_colors as string[] | null) ?? [])], [fromTitle]);
+      setField(row, sources, "primary_colors", [fromTitle], "title");
+      setField(row, sources, "base_color", [fromTitle.toLowerCase()], "derived");
+    } else if (names.length) {
+      setField(row, sources, "primary_colors", names, "shopify");
+    }
   }
   if (patternTags.length) {
     row.tags = [...new Set([...(row.tags ?? []), ...patternTags])];
@@ -702,6 +722,15 @@ function buildRow(
     } else if (fromMerchant) {
       setField(row, sources, "product_category", fromMerchant, "derived");
     }
+  }
+  // A pant filed as a shirt (merchant type copied from a shirt listing, or
+  // carried from an earlier sync) is sized and searched as a shirt; the title wins.
+  const titleCategory = titleContradictsCategory(product.title, row.product_category);
+  if (titleCategory) {
+    notes.push(`category ${row.product_category} contradicts the title; using ${titleCategory}`);
+    swapTags(row, [row.product_category], [titleCategory]);
+    setField(row, sources, "product_category", titleCategory, "title");
+    if (row.body_part_tag === "top") row.body_part_tag = null;
   }
 
   // Strict product_type mapping: ONLY 'Clothing' or 'Accessories'
